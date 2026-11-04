@@ -18,7 +18,13 @@ jobs:
     steps:
       - name: Toolchain
         run: |
-          apt-get update
+          # bullseye left the live mirrors; use the Debian archive
+          printf '%s\n' \
+            'deb http://archive.debian.org/debian bullseye main' \
+            'deb http://archive.debian.org/debian-security bullseye-security main' \
+            > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*
+          apt-get -o Acquire::Check-Valid-Until=false update
           apt-get install -y --no-install-recommends build-essential pkg-config \
             libsdl2-dev python3 python3-numpy zip git ca-certificates file
       - uses: actions/checkout@v4
