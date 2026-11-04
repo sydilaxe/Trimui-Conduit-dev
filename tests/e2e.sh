@@ -1,8 +1,9 @@
 #!/bin/sh
-# Headless end-to-end run: SDL "disk" audio driver feeds a synthetic signal
+# Headless end-to-end run of the desktop build (make test-e2e): SDL "disk" audio driver feeds a synthetic signal
 # into the capture device, the dummy video driver renders the UI offscreen.
 set -e
 cd "$(dirname "$0")/.."
+BIN="${1:-build/desktop/conduit}"
 W=build/e2e; rm -rf "$W"; mkdir -p "$W/rec"
 python3 - "$W/in.raw" <<'PY'
 import sys, numpy as np
@@ -14,5 +15,5 @@ PY
 SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILEIN="$W/in.raw" SDL_DISKAUDIOFILE="$W/out.raw" \
 SDL_VIDEODRIVER=dummy CONDUIT_WINDOWED=1 \
 CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/conduit.cfg" \
-  ./conduit --selftest --shots "$W"
+  "$BIN" --selftest --shots "$W"
 ls -l "$W/rec"

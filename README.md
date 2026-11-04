@@ -1,10 +1,12 @@
 # Conduit
 
-A USB-audio sampler / looper for the **TrimUI Brick** and **Brick Pro**.
+A USB-audio sampler / looper for the **TrimUI Brick**, **Brick Hammer** and **Brick Pro**.
 Sample from a USB audio interface (or the internal mic), loop it, bend it
 with pitch, filter, crush and delay, overdub layers, and save WAVs to the
-MicroSD card. Written in C on SDL2 only, so it runs on **MustardOS (muOS)**
-and **KNULLI** without Python or extra libraries.
+MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
+**MustardOS (muOS)** and **KNULLI** without Python or extra libraries.
+
+**Latest release:** [v0.1.0](../../releases/tag/v0.1.0) · [all releases](../../releases)
 
 > Status: 0.1.0 dev. Engine, UI, WAV I/O and the full record → loop → FX →
 > save path are tested headless in CI. Not yet tested on Brick hardware.
@@ -55,13 +57,28 @@ shows the last raw button number pressed.
 
 ## Install
 
-Download the zip for your OS from the Releases/Actions artifacts.
+Each release has one package per firmware, all with the same binary:
 
-**MustardOS:** extract and copy `Conduit/` to `/mnt/mmc/MUOS/application/`,
-then launch it from Applications.
+| TrimUI OS | MustardOS | KNULLI |
+| --- | --- | --- |
+| `Conduit-trimui.zip` | `Conduit-mustardos.muxapp` | `Conduit-knulli.zip` |
 
-**KNULLI:** extract and copy `Conduit.sh` and `conduit/` to
-`/userdata/roms/ports/`, refresh PORTS, then launch Conduit.
+Download it from the latest [release](../../releases), from the artifacts of the latest
+run on the Actions tab, or build it (see below).
+
+**TrimUI OS:** unzip `Conduit-trimui.zip` at the root of the SD card, so the app lands in
+`SD:/Apps/Conduit`, then launch **Conduit** from Apps.
+
+**MustardOS:** copy `Conduit-mustardos.muxapp` into the `ARCHIVE` folder at the root of the
+first SD card, install it from **Applications → Archive Manager**, then launch **Conduit**
+from Applications. By hand instead: unzip it and copy its `Conduit/` folder into
+`MUOS/application/`.
+
+**KNULLI:** unzip `Conduit-knulli.zip` into `/userdata/roms/ports/` (it holds `Conduit.sh`
+and `conduit/`), refresh PORTS, then launch **Conduit**.
+
+With the card mounted on a computer you can also run `make install SD=/path/to/card`
+(add `OS=mustardos` or `OS=knulli`).
 
 Recordings go to `recordings/` inside the app folder (on the MicroSD card).
 To change this, set `CONDUIT_REC_DIR` in the launcher.
@@ -85,16 +102,26 @@ nothing.
 ## Build
 
 ```sh
-make                    # native (desktop) build: CONDUIT_WINDOWED=1 ./conduit
-make test               # engine + WAV unit tests (ASan/UBSan)
-make test-e2e           # headless run on SDL's disk audio driver
-make CROSS=aarch64-linux-gnu-   # cross build for the Brick
-make package            # dist/ zips for MustardOS and KNULLI
+make              # cross-compile for the TrimUI -> build/trimui/conduit
+make desktop      # a build for this computer -> build/desktop/conduit
+                  #   (run it windowed: CONDUIT_WINDOWED=1 build/desktop/conduit)
+make test         # engine + WAV unit tests (ASan/UBSan)
+make test-e2e     # the desktop build, run headless on SDL's disk audio driver
+make package      # build/Conduit-trimui.zip, Conduit-mustardos.muxapp, Conduit-knulli.zip
+make version      # the version built (CONDUIT_VERSION in src/main.c, or VERSION=x.y.z)
 ```
 
-On every push, CI (`.github/workflows/build.yml`) builds the aarch64 binary
-in Debian bullseye (glibc 2.31) on a native arm64 runner, runs all tests and
-uploads both zips. Pushing a `v*` tag makes a pre-release.
+The TrimUI build is cross-compiled with [zig](https://ziglang.org) (aarch64, glibc 2.28)
+against the SDL2 headers in `third_party/` and links to the firmware's own SDL2 at run
+time, like the other TrimUI apps. Without zig on the path, run
+`pip install ziglang==0.14.1`. The desktop build needs the SDL2 dev files
+(`libsdl2-dev`).
+
+On every push, CI (`.github/workflows/build.yml`) builds the three packages, checks them,
+and runs the unit and end-to-end tests. To release, push a `v*` tag (or create a release
+on the website, or run the workflow by hand with a tag): the packages are built as the
+tag's version and published with `.github/release-notes.md`. Keep the README's
+**Latest release** line at the version in `src/main.c`; CI checks it.
 
 Keyboard on desktop: arrows, X=A, Z=B, S=X, A=Y, Q/W=L1/R1, 1/2=L2/R2,
 Backspace=SELECT, Enter=START, Esc=MENU.
@@ -102,12 +129,16 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 ## Layout
 
 ```
-src/main.c      UI, input, device handling, save/load, self-test
-src/dsp.c       engine: input FIFO, recorder, looper, overdub/undo, FX, bounce
-src/wav.c       WAV writer (fsync) and reader (+ resampler)
-src/sdl_shim.h  SDL2 declarations for building without headers
-src/font_data.h embedded DejaVu Sans Mono glyphs (tools/genfont.py)
-pkg/            launchers for MustardOS / KNULLI, diag script
+src/main.c          UI, input, device handling, save/load, self-test
+src/dsp.c           engine: input FIFO, recorder, looper, overdub/undo, FX, bounce
+src/wav.c           WAV writer (fsync) and reader (+ resampler)
+src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
+Apps/Conduit/       the app folder: launch.sh, config.json, icon, conduit_diag.sh
+mustardos/          MustardOS: mux_launch.sh, wake_screen.sh, the list glyph
+knulli/Conduit.sh   KNULLI PORTS launcher
+third_party/        SDL2 headers for the cross build
+tools/              mksdlstub.py (link stub), genfont.py, mkicon.py
+tests/              unit tests and the end-to-end script
 ```
 
 Inspired by [GrainBrick](https://github.com/ETRNLIAM/GrainBrick). Conduit

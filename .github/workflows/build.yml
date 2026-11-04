@@ -2,49 +2,143 @@ name: build
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a GitHub release with this tag (e.g. v0.1.0). Leave empty to just build."
+        required: false
+        default: ""
+
+env:
+  # set for a release (a pushed v* tag, a release made on the website, or a manual run with a tag);
+  # the release is built as that version, so the source doesn't need bumping first
+  RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
 
 jobs:
-  aarch64:
-    # native arm64 runner; Debian bullseye (glibc 2.31) keeps the binary
-    # compatible with both MustardOS and KNULLI userlands
-    runs-on: ubuntu-24.04-arm
-    container: debian:bullseye
+  trimui:
+    name: TrimUI packages (Brick, Brick Hammer, Brick Pro; TrimUI OS, MustardOS and KNULLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The README shows the source's version
+        run: |
+          # README's "Latest release" line and the version in the source move together
+          v=$(make -s version)
+          grep -qF "**Latest release:** [v$v](../../releases/tag/v$v)" README.md ||
+            { echo "::error::README.md's Latest release line isn't v$v, the version in the source"; exit 1; }
+      - name: Build
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            # a manual run's tag may leave out the v
+            echo "${RELEASE_TAG#v}" | grep -Eqx '[0-9]+(\.[0-9]+)*' ||
+              { echo "::error::release tag $RELEASE_TAG should look like v1.2.3"; exit 1; }
+            set -- VERSION="${RELEASE_TAG#v}"
+          fi
+          pip install ziglang==0.14.1
+          # the scripts the device runs: the launchers, the screen wake, the USB report
+          for s in Apps/Conduit/launch.sh Apps/Conduit/conduit_diag.sh mustardos/*.sh; do sh -n "$s"; done
+          bash -n knulli/Conduit.sh
+          make -j"$(nproc)" package "$@"
+          v=$(make -s version "$@")
+          echo "built version $v"
+          z=build/Conduit-trimui.zip
+          ls -l $z
+          for f in conduit launch.sh config.json icon.png conduit_diag.sh recordings/README.txt; do
+            unzip -l $z | grep -q "Apps/Conduit/$f$" || { echo "::error::$z has no $f"; exit 1; }
+          done
+          test "$(unzip -p $z Apps/Conduit/VERSION)" = "$v"
+          file build/trimui/conduit | grep -q "ARM aarch64"
+          strings build/trimui/conduit | grep -qx "Conduit $v"
+          # runs on the firmware's own SDL2, and needs nothing newer than glibc 2.28
+          readelf -d build/trimui/conduit | grep -q "libSDL2-2.0.so.0"
+          # (a bare "! cmd" can't fail a step under set -e, hence the ifs)
+          if objdump -T build/trimui/conduit | grep -o "GLIBC_[0-9.]*" | sort -uV | awk -F'[_.]' '$2 > 2 || ($2 == 2 && $3 > 28)' | grep .; then
+            echo "::error::the binary needs a glibc newer than 2.28"; exit 1
+          fi
+          # MustardOS: the same app folder in "Conduit/", with mux_launch.sh, wake_screen.sh and the list glyph
+          m=build/Conduit-mustardos.muxapp
+          ls -l $m
+          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh; do
+            unzip -l $m | grep -q "Conduit/$f$" || { echo "::error::$m has no $f"; exit 1; }
+          done
+          test "$(unzip -p $m Conduit/VERSION)" = "$v"
+          unzip -p $m Conduit/conduit | cmp -s - build/trimui/conduit
+          # MustardOS's Archive Manager refuses absolute and .. paths, and anything not a file or folder
+          if unzip -Z1 $m | grep -Eq '^/|(^|/)\.\.(/|$)|\\'; then echo "::error::$m has unsafe paths"; exit 1; fi
+          if unzip -Zl $m | grep -Eq '^[bclps]'; then echo "::error::$m has links or devices"; exit 1; fi
+          # mux_launch.sh belongs to the MustardOS package only
+          if unzip -l $z | grep -q mux_launch.sh; then echo "::error::$z has mux_launch.sh"; exit 1; fi
+          # KNULLI: Conduit.sh and conduit/ for /userdata/roms/ports
+          k=build/Conduit-knulli.zip
+          ls -l $k
+          for f in Conduit.sh conduit/conduit conduit/conduit_diag.sh; do
+            unzip -l $k | grep -q " $f$" || { echo "::error::$k has no $f"; exit 1; }
+          done
+          test "$(unzip -p $k conduit/VERSION)" = "$v"
+          unzip -p $k conduit/conduit | cmp -s - build/trimui/conduit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Conduit-trimui
+          path: |
+            build/Conduit-trimui.zip
+            build/Conduit-mustardos.muxapp
+            build/Conduit-knulli.zip
+
+  test:
+    name: Engine tests + desktop end-to-end (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev python3-numpy
+      - name: DSP + WAV unit tests (ASan/UBSan)
+        run: make test
+      - name: End-to-end (SDL disk audio, headless)
+        run: make -j"$(nproc)" test-e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-output
+          path: build/e2e/
+
+  release:
+    name: Publish release
+    # runs for: a pushed v* tag, a release created on the website, or a manual run with a tag filled in
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || inputs.release_tag != ''
+    needs: [trimui, test]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Toolchain
-        run: |
-          # bullseye left the live mirrors; use the Debian archive
-          printf '%s\n' \
-            'deb http://archive.debian.org/debian bullseye main' \
-            'deb http://archive.debian.org/debian-security bullseye-security main' \
-            > /etc/apt/sources.list
-          rm -f /etc/apt/sources.list.d/*
-          apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends build-essential pkg-config \
-            libsdl2-dev python3 python3-numpy zip git ca-certificates file
       - uses: actions/checkout@v4
-      - name: Build
-        run: make CFLAGS="-O2 -mcpu=cortex-a53"
-      - name: Unit tests
-        run: make test
-      - name: End-to-end (SDL disk audio, headless)
-        run: make test-e2e
-      - name: Package
+      - uses: actions/download-artifact@v4
+        with:
+          name: Conduit-trimui
+      - name: Check the packages were built as this version
         run: |
-          file conduit
-          make package
-      - uses: actions/upload-artifact@v4
-        with:
-          name: conduit-aarch64
-          path: dist/*.zip
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: true
-          files: dist/*.zip
+          # a manual run's tag may leave out the v
+          TAG=v${RELEASE_TAG#v}
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          test "$(unzip -p Conduit-trimui.zip Apps/Conduit/VERSION)" = "${TAG#v}" ||
+            { echo "::error::Conduit-trimui.zip isn't version ${TAG#v}"; exit 1; }
+          test "$(unzip -p Conduit-mustardos.muxapp Conduit/VERSION)" = "${TAG#v}" ||
+            { echo "::error::Conduit-mustardos.muxapp isn't version ${TAG#v}"; exit 1; }
+          test "$(unzip -p Conduit-knulli.zip conduit/VERSION)" = "${TAG#v}" ||
+            { echo "::error::Conduit-knulli.zip isn't version ${TAG#v}"; exit 1; }
+      - name: Create the GitHub release with the TrimUI OS, MustardOS and KNULLI packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files="Conduit-trimui.zip Conduit-mustardos.muxapp Conduit-knulli.zip"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" $files --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" $files \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Conduit $TAG" \
+              --notes-file .github/release-notes.md \
+              --latest
+          fi

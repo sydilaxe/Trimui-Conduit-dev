@@ -7,5 +7,5 @@ cd "$APPDIR" || exit 1
 export CONDUIT_REC_DIR="${CONDUIT_REC_DIR:-$APPDIR/recordings}"
 export CONDUIT_CFG="$APPDIR/conduit.cfg"
 
-./conduit >"$APPDIR/conduit.log" 2>&1
+./conduit >"$APPDIR/log.txt" 2>&1
 sync
