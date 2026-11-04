@@ -1,0 +1,5 @@
+conduit
+build/
+dist/
+tests/test_dsp
+*.o
