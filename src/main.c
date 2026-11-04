@@ -1,8 +1,8 @@
 /*
  * Conduit — USB audio sampler / looper for TrimUI Brick & Brick Pro.
- * SDL2 only (audio, video, input); runs on MustardOS and Knulli.
+ * SDL2 only (audio, video, input); runs on TrimUI OS, MustardOS and KNULLI.
  */
-#include "sdl_shim.h"
+#include <SDL2/SDL.h>
 #include "dsp.h"
 #include "wav.h"
 #include "font_data.h"
@@ -21,7 +21,10 @@
 
 #define SW 1024
 #define SH 768
-#define VERSION "0.1.0"
+/* the version: the default for plain builds; releases are built with VERSION=<tag> (see the Makefile) */
+#ifndef CONDUIT_VERSION
+#define CONDUIT_VERSION "0.1.0"
+#endif
 #define MAX_SECONDS 120
 #define MAX_DEVS 32
 #define MAX_FILES 512
@@ -915,7 +918,7 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--selftest")) test = 1;
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) shots = argv[++i];
-        else if (!strcmp(argv[i], "--version")) { puts("Conduit " VERSION); return 0; }
+        else if (!strcmp(argv[i], "--version")) { puts("Conduit " CONDUIT_VERSION); return 0; }
     }
     const char *rd = getenv("CONDUIT_REC_DIR"), *cf = getenv("CONDUIT_CFG");
     snprintf(G.rec_dir, sizeof G.rec_dir, "%s", rd && *rd ? rd : "recordings");
@@ -937,6 +940,9 @@ int main(int argc, char **argv)
     if (!G.ren) { fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
     SDL_RenderSetLogicalSize(G.ren, SW, SH);
     SDL_ShowCursor(0);
+    /* MustardOS: the screen can stay dark once the window is up; mux_launch.sh points this at wake_screen.sh */
+    { const char *wake = getenv("CONDUIT_SCREEN_WAKE");
+      if (wake && *wake) { char cmd[600]; snprintf(cmd, sizeof cmd, "'%s' >/dev/null 2>&1 &", wake); if (system(cmd)) {} } }
     make_font();
     open_pads();
 

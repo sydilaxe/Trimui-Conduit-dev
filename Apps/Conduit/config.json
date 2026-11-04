@@ -1,0 +1,6 @@
+{
+"label":"Conduit",
+"icon":"icon.png",
+"launch":"launch.sh",
+"description":"USB audio sampler / looper (MENU to exit)"
+}

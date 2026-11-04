@@ -1,5 +1,7 @@
-conduit
 build/
-dist/
-tests/test_dsp
-*.o
+Apps/Conduit/conduit
+Apps/Conduit/conduit.cfg
+Apps/Conduit/log.txt
+Apps/Conduit/conduit_diag.txt
+Apps/Conduit/recordings/*.wav
+__pycache__/
