@@ -132,13 +132,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files="Conduit-trimui.zip Conduit-mustardos.muxapp Conduit-knulli.zip"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" $files --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" $files \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "Conduit $TAG" \
-              --notes-file .github/release-notes.md \
-              --latest
+          api="repos/$GITHUB_REPOSITORY/releases"
+          # the release for this tag, a draft left by an earlier run included
+          id=$(gh api "$api" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
+          if [ -z "$id" ]; then
+            # made as a draft first, so nobody sees it without its files
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --target "$GITHUB_SHA" --title "Conduit $TAG" --notes-file .github/release-notes.md
+            id=$(gh api "$api" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
           fi
+          for f in $files; do
+            for try in 1 2 3 4; do
+              # drop any copy already there, finished or cut off half way by an earlier try or run
+              gh api "$api/$id/assets" --paginate -q ".[] | select(.name == \"$f\") | .id" |
+                while read -r a; do gh api -X DELETE "$api/assets/$a"; done
+              gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" && break
+              [ "$try" = 4 ] && { echo "::error::couldn't upload $f"; exit 1; }
+              sleep $((try * 10))
+            done
+          done
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
