@@ -721,7 +721,7 @@ static void value_str(int id, char *o, size_t sz)
     case K_ENUM: snprintf(o, sz, "%s", d->labels[(int)v]); break;
     case K_PCT: snprintf(o, sz, "%.0f%%", v * 100); break;
     case K_DECAY:
-        if (v < 0.0001f) snprintf(o, sz, "Off");
+        if (v < 0.0001f) snprintf(o, sz, "Off  (layers add up)");
         else snprintf(o, sz, "%.*f%% per pass  (%.2f dB)", v < 0.01f ? 2 : 1, v * 100, 20 * log10f(1 - v));
         break;
     case K_LOOPPOS: { char t[32]; fmt_time(t, sizeof t, v * G.eng.len / CD_SR); snprintf(o, sz, "%s  (%.1f%%)", t, v * 100); } break;

@@ -259,10 +259,21 @@ static void handle_cmds(Engine *e)
     }
 }
 
+/* Layers that pile up past -2 dB are rounded off like tape instead of hard
+ * clipped: unchanged up to 0.8, then easing towards 1.0 (same slope at the
+ * knee, so no edge). Below the knee it changes nothing. */
+static inline float sat(float x)
+{
+    float a = fabsf(x);
+    if (a <= 0.8f) return x;
+    float y = 0.8f + 0.2f * tanhf((a - 0.8f) * 5.f);
+    return x < 0 ? -y : y;
+}
+
 static inline void od_write(Engine *e, int idx, float il, float ir, float keep)
 {
-    e->buf[2 * idx] = clampf(e->buf[2 * idx] * keep + il, -1.f, 1.f);
-    e->buf[2 * idx + 1] = clampf(e->buf[2 * idx + 1] * keep + ir, -1.f, 1.f);
+    e->buf[2 * idx] = sat(e->buf[2 * idx] * keep + il);
+    e->buf[2 * idx + 1] = sat(e->buf[2 * idx + 1] * keep + ir);
 }
 
 /* overdub one loop frame; the crossfaded head also writes its tail partner,

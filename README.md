@@ -62,7 +62,9 @@ after pass.
 tape wearing out: older layers slowly fade, and stacking overdubs can't
 build up until it distorts (the same part played over and over levels off
 instead of growing). It's 2% a pass by default (−0.18 dB); set it from Off
-to 50% in 0.5% steps (hold L2 for 0.05%, R2 for 5%). **LOOP → Decay**
+to 50% in 0.5% steps (hold L2 for 0.05%, R2 for 5%). At Off, layers just
+add up; once they pile up near full scale they're rounded off smoothly, like
+tape, rather than clipping harshly. **LOOP → Decay**
 chooses when: *While overdubbing* (the loop only wears while you're adding
 to it) or *Always* (it fades even while it just plays; the loop as it was
 when it started fading is kept as an undo step).

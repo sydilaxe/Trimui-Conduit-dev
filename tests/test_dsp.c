@@ -276,6 +276,23 @@ static void test_decay(void)
     snprintf(msg, sizeof msg, "100 layers with 5%% decay level off at %.3f (want 0.02 / 0.05 = 0.4, not 1.0+)", m);
     T(m > 0.37 && m < 0.41, msg);
     eng_overdub_toggle(e);
+    blocks(e, 0, 20);
+
+    /* decay Off: layers add up, and past -2 dB round off smoothly (no hard clip) */
+    eng_set_buffer(e, st, n); eng_play_toggle(e);
+    e->p[P_DECAY] = 0;
+    blocks(e, 0, 20);
+    eng_overdub_toggle(e);
+    blocks(e, 0.02f, 94);              /* ~10 passes: 0.2, still linear */
+    m = mean_abs(e->buf + 2 * ls, le - ls);
+    snprintf(msg, sizeof msg, "decay Off: 10 layers add up to %.3f (want 0.2)", m);
+    T(fabs(m - 0.2) < 0.025, msg);
+    blocks(e, 0.02f, 1000);            /* 100 more: would be 2.2 */
+    float top = 0;
+    for (int i = 2 * ls; i < 2 * le; i++) if (fabsf(e->buf[i]) > top) top = fabsf(e->buf[i]);
+    snprintf(msg, sizeof msg, "decay Off: 110 layers (2.2 if summed) settle below full scale, no hard clip (peak %.3f)", top);
+    T(top < 0.95f && top > 0.85f, msg);
+    eng_overdub_toggle(e);
     free(st);
     eng_free(e); free(e);
 }
