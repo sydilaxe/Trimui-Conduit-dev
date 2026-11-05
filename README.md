@@ -79,8 +79,11 @@ the loop comes back stopped, and B plays it.
 
 The loop's seam is crossfaded (10 ms), and playback fades in and out when
 it starts and stops, so neither clicks. The USB input is kept in step with
-the Brick's output even though their clocks differ slightly; the IO page's
-Diagnostics line counts any input dropouts (`xrun`).
+the Brick's output even though their clocks differ slightly, and Conduit
+measures the rate the interface really delivers, so a 48 kHz interface that
+the driver reports as 44.1 kHz (or the other way round) still records at its
+true pitch. The IO page's Diagnostics line shows that measured input rate
+(`in 48.0 kHz` when all is well) and counts any input dropouts (`xrun`).
 
 If A and B feel swapped on your firmware, set `swap_ab=1` in `conduit.cfg`.
 Without an SDL controller mapping, Conduit falls back to raw joystick

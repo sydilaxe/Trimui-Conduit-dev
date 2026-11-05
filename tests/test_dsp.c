@@ -93,6 +93,49 @@ static void test_drift(void)
     eng_free(e); free(e);
 }
 
+/* A capture device that runs at 48 kHz while the driver calls it 44.1 kHz
+ * (so SDL hands over 52.2k frames a second): the engine must measure that,
+ * record the take at its real pitch and keep the FIFO from overflowing.
+ * The reverse (44.1 kHz called 48) must work too. */
+static void test_rate_mismatch(void)
+{
+    for (int dir = 0; dir < 2; dir++) {
+        double speed = dir == 0 ? 48000.0 / 44100.0 : 44100.0 / 48000.0;
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 4);
+        e->in_block = 512; e->in_restart = 1;
+        float in[600 * 2], out[512 * 2];
+        double ph = 0, owed = 0, pushed = 0;
+        uint32_t o0 = 0, u0 = 0;
+        for (int k = 0; k < 900; k++) {            /* ~9.6 s */
+            owed += 512 * speed;
+            while (pushed + 512 <= owed) {
+                pushed += 512;
+                for (int i = 0; i < 512; i++) {
+                    /* a 440 Hz tone in real time, sampled at the device's real rate */
+                    float s = 0.5f * (float)sin(ph); ph += 2 * M_PI * 440 / (CD_SR * speed);
+                    in[2 * i] = in[2 * i + 1] = s;
+                }
+                eng_push_input(e, in, 512);
+            }
+            if (k == 300) { o0 = e->overruns; u0 = e->underruns; eng_rec_button(e); }
+            if (k == 300 + 94) eng_rec_button(e);   /* ~1 s take */
+            eng_render(e, out, 512);
+        }
+        char msg[160];
+        snprintf(msg, sizeof msg, "input %s: measured %.4f (want %.4f)",
+                 dir == 0 ? "48k sent as 44.1k" : "44.1k sent as 48k", e->in_ratio, speed);
+        T(fabs(e->in_ratio - speed) < 0.01 * speed, msg);
+        /* count zero crossings of the take: 440 Hz at CD_SR */
+        int zc = 0;
+        for (int i = 1; i < e->len; i++) if ((e->buf[2 * i - 2] < 0) != (e->buf[2 * i] < 0)) zc++;
+        double hz = zc / 2.0 * CD_SR / e->len;
+        snprintf(msg, sizeof msg, "  the take keeps its pitch: %.1f Hz (want 440), no overflows or underruns", hz);
+        T(fabs(hz - 440) < 3 && e->overruns == o0 && e->underruns == u0, msg);
+        eng_free(e); free(e);
+    }
+}
+
 /* A take that doesn't end where it starts: the wrap must not click, and
  * neither may stopping or starting playback. */
 static void test_seam_and_fades(void)
@@ -299,6 +342,7 @@ static void test_decay(void)
 
 int main(void)
 {
+    test_rate_mismatch();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");
     float pk;

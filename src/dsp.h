@@ -74,6 +74,18 @@ typedef struct {
     int margin;                /* FIFO safety margin (frames): grows after an underrun */
     int in_block, lat_frames;  /* capture block size; device latency estimate (frames), set by the app */
 
+    /* input clock: how many capture frames arrive per output frame, measured.
+     * A device that runs at another rate than the driver says (48 kHz sent
+     * as 44.1 kHz is 1.5 semitones) is read at its real rate, so takes keep
+     * their pitch. */
+    double in_ratio;           /* 1.0: input and output agree */
+    uint64_t out_total;        /* output frames rendered */
+    uint64_t rm_o0, rm_ol;     /* measuring: anchor and window start (output frames) */
+    uint32_t rm_w0, rm_wl;     /* ... and the input frames written then */
+    int rm_state, rm_bad;      /* 0: warming up after (re)start, 1: measuring */
+    volatile int in_restart;   /* set by the app when it (re)opens the capture device */
+    double od_comp;            /* overdub write offset, fixed when writing starts */
+
     volatile int cmd;          /* pending UI commands (CMD_* bits) */
     int last_od;               /* last overdub write index */
     float play_g, mon_g;       /* play / stop fade and input monitor gains */
