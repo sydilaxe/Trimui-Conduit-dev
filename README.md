@@ -19,8 +19,9 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 - **Sampler:** up to 120 s. Instant or threshold-triggered recording, with
   input gain and level meters.
 - **Looper:** trim start and end, pitch ±24 semitones plus fine tune
-  (tape-style varispeed), reverse, overdub with adjustable decay, and a
-  one-level undo.
+  (tape-style varispeed), reverse, overdub (in time, unlimited layers),
+  adjustable loop decay (while overdubbing or always), 16 levels of undo,
+  and a click-free loop seam.
 - **FX chain:** drive → sample-rate reducer → bit crusher → resonant SVF
   (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 loop, ping-pong, damped
   feedback).
@@ -37,8 +38,8 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 | Button | Action |
 |---|---|
 | A | Record / stop (stop starts the loop). On the FILES tab: load |
-| B | Play / stop loop |
-| X | Overdub on / off |
+| B | Play / stop loop. **Hold for 1 s:** stop and erase the loop (nothing new is recorded) |
+| X | Overdub on / off: play over the loop while it keeps going; what you play is added to it |
 | Y | Reverse. On the FILES tab: delete (press twice) |
 | START | Save take (loop region, raw) |
 | D-pad ↑↓ | Select parameter |
@@ -46,9 +47,40 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 | L1 / R1 | Switch tab: LOOP · FX · IO · FILES |
 | SELECT + START | Bounce processed loop to WAV |
 | SELECT + Y | Resample (print FX into the buffer) |
-| SELECT + B | Undo last overdub |
-| SELECT + X | Clear buffer (press twice) |
+| SELECT + B | Undo: the last overdub, then the one before (up to 16), or an erase |
+| SELECT + X | Erase the loop (press twice) |
 | MENU | Quit |
+
+### Overdub
+
+While overdubbing you hear your input straight away, and it is added to the
+loop where you heard it: Conduit allows for the time the sound takes to get
+out to your ears and back in from the interface, so layers stay in time pass
+after pass.
+
+**LOOP → Loop decay** makes the loop a little quieter on every pass, like
+tape wearing out: older layers slowly fade, and stacking overdubs can't
+build up until it distorts (the same part played over and over levels off
+instead of growing). It's 2% a pass by default (−0.18 dB); set it from Off
+to 50% in 0.5% steps (hold L2 for 0.05%, R2 for 5%). At Off, layers just
+add up; once they pile up near full scale they're rounded off smoothly, like
+tape, rather than clipping harshly. **LOOP → Decay**
+chooses when: *While overdubbing* (the loop only wears while you're adding
+to it) or *Always* (it fades even while it just plays; the loop as it was
+when it started fading is kept as an undo step).
+
+If layers still land a little early or late with your interface, trim them
+with **IO → Dub align** (+ moves them earlier, − later).
+
+There's no limit on layers. SELECT + B undoes them one at a time, newest
+first, up to 16 steps back (fewer for very long takes: undo keeps at most
+256 MB of copies). An erase can be undone too, until you record a new take;
+the loop comes back stopped, and B plays it.
+
+The loop's seam is crossfaded (10 ms), and playback fades in and out when
+it starts and stops, so neither clicks. The USB input is kept in step with
+the Brick's output even though their clocks differ slightly; the IO page's
+Diagnostics line counts any input dropouts (`xrun`).
 
 If A and B feel swapped on your firmware, set `swap_ab=1` in `conduit.cfg`.
 Without an SDL controller mapping, Conduit falls back to raw joystick
