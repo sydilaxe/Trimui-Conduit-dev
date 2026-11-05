@@ -11,7 +11,7 @@
 
 typedef enum {
     /* LOOP page */
-    P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_ODUB_KEEP,
+    P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_DECAY, P_DECAY_MODE,
     P_VOLUME, P_MONITOR,
     /* FX page */
     P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS,
@@ -78,6 +78,8 @@ typedef struct {
     int last_od;               /* last overdub write index */
     float play_g, mon_g;       /* play / stop fade and input monitor gains */
     int clear_pending;         /* erase once the fade-out ends */
+    volatile int decay_armed;  /* Decay: Always may degrade the loop (the UI saved an undo step first) */
+    int writing;               /* the loop was written last frame (overdub or decay) */
     volatile uint32_t underruns, overruns;
     volatile float in_peak, out_peak;
     FxState fx;
@@ -102,6 +104,7 @@ void eng_erase(Engine *e);                /* stop (with a fade) and empty the bu
 void eng_clear(Engine *e);                /* [lock] */
 int  eng_undo(Engine *e);                 /* [lock] 0: nothing to undo, UNDO_DUB or UNDO_ERASE */
 int  eng_undo_count(Engine *e);           /* undo steps available */
+void eng_ui_tick(Engine *e);              /* call often from the UI: saves an undo step before Decay: Always starts */
 void eng_set_buffer(Engine *e, const float *st, int frames); /* [lock] */
 
 /* loop helpers: the playable loop is [ls, le) (the 10 ms seam crossfade is

@@ -18,7 +18,8 @@ void eng_default_params(float *p)
     memset(p, 0, sizeof(float) * P_COUNT);
     p[P_LOOP_START] = 0.f;  p[P_LOOP_END] = 1.f;
     p[P_PITCH] = 0.f;       p[P_FINE] = 0.f;  p[P_REVERSE] = 0.f;
-    p[P_ODUB_KEEP] = 1.f;   p[P_VOLUME] = 0.9f; p[P_MONITOR] = 0.f;
+    p[P_DECAY] = 0.02f;    p[P_DECAY_MODE] = 0.f;
+      p[P_VOLUME] = 0.9f; p[P_MONITOR] = 0.f;
     eng_reset_fx_params(p);
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
@@ -197,14 +198,14 @@ static void do_clear(Engine *e)
 {
     e->playing = 0; e->overdub = 0; e->rec_state = ST_IDLE;
     e->len = 0; e->rec_pos = 0; e->pos = 0;
-    e->play_g = 0; e->clear_pending = 0;
+    e->play_g = 0; e->clear_pending = 0; e->decay_armed = 0;
     e->version++;
 }
 
 static void start_rec(Engine *e)
 {
     e->playing = 0; e->overdub = 0; e->clear_pending = 0; e->undo_stale = 1;
-    e->rec_pos = 0; e->len = 0; e->rec_state = ST_REC; e->play_g = 0;
+    e->rec_pos = 0; e->len = 0; e->rec_state = ST_REC; e->play_g = 0; e->decay_armed = 0;
     e->version++;
 }
 
@@ -311,7 +312,10 @@ void eng_render(Engine *e, float *out, int frames)
     memcpy(p, e->p, sizeof p);
     float gain = db2lin(p[P_IN_GAIN]);
     float thr = db2lin(p[P_THRESH]);
-    float keep = p[P_ODUB_KEEP], vol = p[P_VOLUME];
+    /* loop decay: each pass of the write head scales the loop by keep, so
+     * layers fade away over time and stacked overdubs can't keep growing */
+    float keep = 1.f - clampf(p[P_DECAY], 0.f, 1.f), vol = p[P_VOLUME];
+    int decay_always = p[P_DECAY_MODE] > 0.5f && keep < 1.f && e->decay_armed;
     double rate = eng_rate(p);
     int rev = p[P_REVERSE] > 0.5f;
     float inmax = 0, outmax = 0;
@@ -385,14 +389,18 @@ void eng_render(Engine *e, float *out, int frames)
 
             float dl = 0, dr = 0;
             if (e->play_g > 0.f && len > 1 && L > 0 && e->rec_state != ST_REC) {
-                if (e->overdub && !e->busy) {
+                int writing = (e->overdub || decay_always) && !e->busy;
+                if (writing && !e->writing) e->last_od = -1;
+                e->writing = writing;
+                if (writing) {
+                    float wl = e->overdub ? il : 0.f, wr = e->overdub ? ir : 0.f;
                     double pp = e->pos;
                     if (pp < ls || pp >= end) pp = rev ? end - 1 : ls;
                     pp += (rev ? comp : -comp) * rate;
                     pp = fmod(pp - ls, (double)L); if (pp < 0) pp += L;
                     int idx = ls + (int)pp; if (idx >= end) idx = end - 1;
                     if (e->last_od < ls || e->last_od >= end) {
-                        od_write_loop(e, idx, ls, le, xf, il, ir, keep);
+                        od_write_loop(e, idx, ls, le, xf, wl, wr, keep);
                     } else {
                         /* write every index the write head crossed since the
                          * last frame (fills gaps when rate > 1, skips
@@ -402,7 +410,7 @@ void eng_render(Engine *e, float *out, int frames)
                             cur += rev ? -1 : 1;
                             if (cur >= end) cur = ls;
                             if (cur < ls) cur = end - 1;
-                            od_write_loop(e, cur, ls, le, xf, il, ir, keep);
+                            od_write_loop(e, cur, ls, le, xf, wl, wr, keep);
                         }
                     }
                     e->last_od = idx;
@@ -431,7 +439,7 @@ void eng_render(Engine *e, float *out, int frames)
     }
     __atomic_store_n(&e->ring_r, r, __ATOMIC_RELEASE);
     e->pos_i = (int)e->pos;
-    if (e->overdub || e->rec_state == ST_REC) e->version++;
+    if (e->writing || e->rec_state == ST_REC) e->version++;
     float dec = powf(0.9995f, (float)frames);
     e->in_peak = inmax > e->in_peak * dec ? inmax : e->in_peak * dec;
     e->out_peak = outmax > e->out_peak * dec ? outmax : e->out_peak * dec;
@@ -500,6 +508,17 @@ void eng_clear(Engine *e) { do_clear(e); undo_reset(e); }
 
 int eng_undo_count(Engine *e) { undo_check(e); return e->undo_n; }
 
+void eng_ui_tick(Engine *e)
+{
+    int want = e->p[P_DECAY_MODE] > 0.5f && e->p[P_DECAY] > 0.f && e->playing && e->len > 0
+               && e->rec_state == ST_IDLE && !e->clear_pending;
+    if (want && !e->decay_armed) {
+        /* the loop as it was before it starts to fade: SELECT + B gets it back */
+        undo_push(e, UNDO_DUB);
+        e->decay_armed = 1;
+    } else if (!want && !e->overdub) e->decay_armed = 0;
+}
+
 int eng_undo(Engine *e)
 {
     undo_check(e);
@@ -531,7 +550,7 @@ void eng_set_buffer(Engine *e, const float *st, int frames)
     e->playing = 0; e->overdub = 0; e->rec_state = ST_IDLE;
     undo_reset(e);
     memcpy(e->buf, st, (size_t)frames * 2 * sizeof(float));
-    e->len = frames; e->rec_pos = frames; e->pos = 0; e->play_g = 0; e->clear_pending = 0;
+    e->len = frames; e->rec_pos = frames; e->pos = 0; e->play_g = 0; e->clear_pending = 0; e->decay_armed = 0;
     e->p[P_LOOP_START] = 0.f; e->p[P_LOOP_END] = 1.f;
     e->version++;
 }

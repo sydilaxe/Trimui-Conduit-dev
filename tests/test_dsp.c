@@ -165,6 +165,7 @@ static void test_overdub_timing(void)
     Engine *e = calloc(1, sizeof *e);
     eng_init(e, 2);
     e->lat_frames = 0;
+    e->p[P_DECAY] = 0;   /* this test checks the rest of the loop stays as it was */
     int n = CD_SR;
     float *st = calloc((size_t)n * 2, sizeof(float));
     int at = 30000;   /* one click in the loop, peaking at `at` */
@@ -209,6 +210,72 @@ static void test_erase(void)
     }
     T(e->len == 0 && !e->playing && e->rec_state == ST_IDLE && worst < 0.01f,
       "erase fades out, empties the buffer and doesn't start recording");
+    free(st);
+    eng_free(e); free(e);
+}
+
+static double mean_abs(const float *st, int n)
+{
+    double a = 0; for (int i = 0; i < 2 * n; i++) a += fabs(st[i]);
+    return a / (2.0 * n);
+}
+
+static void blocks(Engine *e, float level, int count)
+{
+    float in[512 * 2], out[512 * 2];
+    for (int i = 0; i < 1024; i++) in[i] = level;
+    for (int k = 0; k < count; k++) { eng_push_input(e, in, 512); eng_ui_tick(e); eng_render(e, out, 512); }
+}
+
+/* Loop decay: each pass scales the loop; only while overdubbing unless
+ * Decay is Always; Always saves an undo step first; and with a little decay,
+ * layer upon layer of the same part levels off instead of growing. */
+static void test_decay(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = 4800 + CD_XFADE / 2;     /* plays 4800 frames (0.1 s) a pass */
+    float *st = malloc(sizeof(float) * 2 * n);
+    for (int i = 0; i < 2 * n; i++) st[i] = 0.5f;
+    eng_set_buffer(e, st, n);
+    int ls, le; eng_loop_range(e, &ls, &le);
+    eng_play_toggle(e);
+
+    e->p[P_DECAY] = 0.1f; e->p[P_DECAY_MODE] = 0;
+    blocks(e, 0, 100);
+    T(fabs(mean_abs(e->buf, n) - 0.5) < 1e-6, "Decay while overdubbing: just playing leaves the loop alone");
+    eng_overdub_toggle(e);
+    blocks(e, 0, 47);                  /* 47 * 512 = 24064 frames: 5 passes and a bit */
+    eng_overdub_toggle(e);
+    blocks(e, 0, 2);
+    double m = mean_abs(e->buf + 2 * ls, le - ls);
+    char msg[120];
+    snprintf(msg, sizeof msg, "10%% decay over 5 overdub passes: level %.3f (want 0.5 x 0.9^5 = 0.295)", m);
+    T(m < 0.5 * pow(0.9, 4.5) && m > 0.5 * pow(0.9, 6), msg);
+    while (eng_undo(e)) {}
+    T(fabs(mean_abs(e->buf, n) - 0.5) < 1e-6, "undo takes back the decay");
+
+    /* Always: fades while just playing, after saving an undo step */
+    eng_set_buffer(e, st, n); eng_play_toggle(e);
+    e->p[P_DECAY] = 0.05f; e->p[P_DECAY_MODE] = 1;
+    blocks(e, 0, 94);                  /* ~10 passes */
+    m = mean_abs(e->buf + 2 * ls, le - ls);
+    snprintf(msg, sizeof msg, "Decay always: 5%% a pass while playing, level %.3f after ~10 passes (want ~0.30)", m);
+    T(m < 0.5 * pow(0.95, 9) && m > 0.5 * pow(0.95, 11), msg);
+    T(eng_undo_count(e) == 1 && eng_undo(e) == UNDO_DUB && fabs(mean_abs(e->buf, n) - 0.5) < 1e-6,
+      "Decay always saved the loop first: undo brings it back");
+
+    /* the same part layered over and over levels off at input / decay */
+    for (int i = 0; i < 2 * n; i++) st[i] = 0;
+    eng_set_buffer(e, st, n); eng_play_toggle(e);
+    e->p[P_DECAY] = 0.05f; e->p[P_DECAY_MODE] = 0;
+    blocks(e, 0, 20);
+    eng_overdub_toggle(e);
+    blocks(e, 0.02f, 1000);            /* ~100 passes */
+    m = mean_abs(e->buf + 2 * ls, le - ls);
+    snprintf(msg, sizeof msg, "100 layers with 5%% decay level off at %.3f (want 0.02 / 0.05 = 0.4, not 1.0+)", m);
+    T(m > 0.37 && m < 0.41, msg);
+    eng_overdub_toggle(e);
     free(st);
     eng_free(e); free(e);
 }
@@ -332,7 +399,7 @@ int main(void)
     }
 
     /* overdub at 2x speed has no holes */
-    e->p[P_PITCH] = 12; e->p[P_ODUB_KEEP] = 0;
+    e->p[P_PITCH] = 12; e->p[P_DECAY] = 1;
     eng_overdub_toggle(e);
     feed_sine(e, 300, 0.2f, CD_SR / 2 + 2048);
     eng_overdub_toggle(e);
@@ -340,7 +407,7 @@ int main(void)
     int zeros = 0; for (int i = 0; i < e->len; i++) if (e->buf[2 * i] == 0.f && copy[2 * i] != 0.f) zeros++;
     T(zeros < 50, "2x overdub writes every frame (no gaps)");
     T(eng_undo(e) == UNDO_DUB, "undo the 2x overdub");
-    e->p[P_PITCH] = 0; e->p[P_ODUB_KEEP] = 1.f;
+    e->p[P_PITCH] = 0; e->p[P_DECAY] = 0;
     free(copy);
 
     /* bounce: seamless and length-correct */
@@ -392,6 +459,7 @@ int main(void)
     test_seam_and_fades();
     test_overdub_timing();
     test_erase();
+    test_decay();
 
     printf(fails ? "\n%d FAILED\n" : "\nall tests passed\n", fails);
     return fails != 0;

@@ -19,8 +19,9 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 - **Sampler:** up to 120 s. Instant or threshold-triggered recording, with
   input gain and level meters.
 - **Looper:** trim start and end, pitch ±24 semitones plus fine tune
-  (tape-style varispeed), reverse, overdub (in time, unlimited layers, with
-  adjustable decay), 16 levels of undo, and a click-free loop seam.
+  (tape-style varispeed), reverse, overdub (in time, unlimited layers),
+  adjustable loop decay (while overdubbing or always), 16 levels of undo,
+  and a click-free loop seam.
 - **FX chain:** drive → sample-rate reducer → bit crusher → resonant SVF
   (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 loop, ping-pong, damped
   feedback).
@@ -55,8 +56,17 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 While overdubbing you hear your input straight away, and it is added to the
 loop where you heard it: Conduit allows for the time the sound takes to get
 out to your ears and back in from the interface, so layers stay in time pass
-after pass. **LOOP → Overdub keep** (100% by default) is how much of the
-loop stays under each new layer; lower it for a fading, tape-echo style dub.
+after pass.
+
+**LOOP → Loop decay** makes the loop a little quieter on every pass, like
+tape wearing out: older layers slowly fade, and stacking overdubs can't
+build up until it distorts (the same part played over and over levels off
+instead of growing). It's 2% a pass by default (−0.18 dB); set it from Off
+to 50% in 0.5% steps (hold L2 for 0.05%, R2 for 5%). **LOOP → Decay**
+chooses when: *While overdubbing* (the loop only wears while you're adding
+to it) or *Always* (it fades even while it just plays; the loop as it was
+when it started fading is kept as an undo step).
+
 If layers still land a little early or late with your interface, trim them
 with **IO → Dub align** (+ moves them earlier, − later).
 

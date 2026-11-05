@@ -36,7 +36,7 @@
 
 /* ------------------------------------------------------------ params */
 
-enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN };
+enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN, K_DECAY };
 typedef struct {
     const char *name; float min, max, step, coarse; int kind; const char *const *labels;
 } ParamDesc;
@@ -46,6 +46,7 @@ static const char *const L_FILT[] = { "Off", "Low-pass", "High-pass", "Band-pass
 static const char *const L_SYNC[] = { "Free (ms)", "1/16 loop", "1/8 loop", "1/4 loop", "1/3 loop", "1/2 loop", "1 loop" };
 static const char *const L_TRIG[] = { "Instant", "Threshold" };
 static const char *const L_FMT[] = { "16-bit PCM", "32-bit float" };
+static const char *const L_DECAY[] = { "While overdubbing", "Always (loop fades)" };
 
 static const ParamDesc PD[P_COUNT] = {
     [P_LOOP_START] = { "Loop start", 0, 1, 0.002f, 0.02f, K_LOOPPOS, 0 },
@@ -53,7 +54,8 @@ static const ParamDesc PD[P_COUNT] = {
     [P_PITCH]      = { "Pitch",    -24, 24, 1, 12, K_ST, 0 },
     [P_FINE]       = { "Fine tune", -100, 100, 5, 25, K_CENTS, 0 },
     [P_REVERSE]    = { "Reverse", 0, 1, 1, 1, K_ENUM, L_ONOFF },
-    [P_ODUB_KEEP]  = { "Overdub keep", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_DECAY]      = { "Loop decay", 0, 0.5f, 0.005f, 0.05f, K_DECAY, 0 },
+    [P_DECAY_MODE] = { "Decay", 0, 1, 1, 1, K_ENUM, L_DECAY },
     [P_VOLUME]     = { "Loop volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MONITOR]    = { "Input monitor", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_FILT_MODE]  = { "Filter", 0, 3, 1, 1, K_ENUM, L_FILT },
@@ -79,7 +81,7 @@ enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_EN
 enum { PG_LOOP, PG_FX, PG_IO, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "LOOP", "FX", "IO", "FILES" };
 static const int PAGE_ROWS[PG_N][14] = {
-    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_ODUB_KEEP, P_VOLUME, P_MONITOR, ROW_END },
+    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_DECAY, P_DECAY_MODE, P_VOLUME, P_MONITOR, ROW_END },
     { P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG, ROW_END },
     { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
@@ -194,9 +196,9 @@ static void scan_files(void)
 
 /* ------------------------------------------------------------ config */
 
-static const int PERSIST[] = { P_ODUB_KEEP, P_VOLUME, P_MONITOR, P_IN_GAIN, P_TRIGGER,
+static const int PERSIST[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_MONITOR, P_IN_GAIN, P_TRIGGER,
                                P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN };
-static const char *const PERSIST_KEY[] = { "overdub_keep", "volume", "monitor", "in_gain",
+static const char *const PERSIST_KEY[] = { "loop_decay", "decay_mode", "volume", "monitor", "in_gain",
                                            "trigger", "threshold", "autoplay", "save_format", "dub_align_ms" };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 
@@ -718,6 +720,10 @@ static void value_str(int id, char *o, size_t sz)
     switch (d->kind) {
     case K_ENUM: snprintf(o, sz, "%s", d->labels[(int)v]); break;
     case K_PCT: snprintf(o, sz, "%.0f%%", v * 100); break;
+    case K_DECAY:
+        if (v < 0.0001f) snprintf(o, sz, "Off");
+        else snprintf(o, sz, "%.*f%% per pass  (%.2f dB)", v < 0.01f ? 2 : 1, v * 100, 20 * log10f(1 - v));
+        break;
     case K_LOOPPOS: { char t[32]; fmt_time(t, sizeof t, v * G.eng.len / CD_SR); snprintf(o, sz, "%s  (%.1f%%)", t, v * 100); } break;
     case K_ST: snprintf(o, sz, "%+.0f st  x%.3f", v, eng_rate(G.eng.p)); break;
     case K_CENTS: snprintf(o, sz, "%+.0f ct", v); break;
@@ -889,7 +895,7 @@ static int screenshot(const char *path)
  * record -> loop -> FX -> overdub -> undo -> save -> bounce -> resample -> reload */
 static int selftest(const char *shot_dir)
 {
-#define WAITMS(ms) do { Uint32 _t = SDL_GetTicks() + (ms); while (SDL_GetTicks() < _t) { SDL_Event ev; while (SDL_PollEvent(&ev)) handle_event(&ev); if (G.ren) draw(); SDL_Delay(10); } } while (0)
+#define WAITMS(ms) do { Uint32 _t = SDL_GetTicks() + (ms); while (SDL_GetTicks() < _t) { SDL_Event ev; while (SDL_PollEvent(&ev)) handle_event(&ev); eng_ui_tick(&G.eng); if (G.ren) draw(); SDL_Delay(10); } } while (0)
 #define CHECK(c, msg) do { if (!(c)) { fprintf(stderr, "SELFTEST FAIL: %s\n", msg); return 1; } else fprintf(stderr, "ok   %s\n", msg); } while (0)
     char p[700];
     Engine *e = &G.eng;
@@ -996,6 +1002,7 @@ int main(int argc, char **argv)
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) handle_event(&ev);
             repeat_tick();
+            eng_ui_tick(&G.eng);
             draw();
             SDL_Delay(4);
         }
