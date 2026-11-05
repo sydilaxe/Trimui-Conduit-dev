@@ -53,10 +53,12 @@ MicroSD card. Written in C on SDL2 only, so it runs on **TrimUI OS**,
 
 ### Overdub
 
-While overdubbing you hear your input straight away, and it is added to the
-loop where you heard it: Conduit allows for the time the sound takes to get
-out to your ears and back in from the interface, so layers stay in time pass
-after pass.
+While overdubbing, what you play is added to the loop where you heard it:
+Conduit allows for the time the sound takes to get out to your ears and back
+in from the interface, so layers stay in time pass after pass. You hear the
+new layer through Conduit once the loop comes back round. To hear your input
+as you play, use your interface's own (direct) monitoring, or turn up
+**Input monitor** if it has none; with both you'd hear yourself twice.
 
 **LOOP → Loop decay** makes the loop a little quieter on every pass, like
 tape wearing out: older layers slowly fade, and stacking overdubs can't

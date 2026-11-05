@@ -136,6 +136,47 @@ static void test_rate_mismatch(void)
     }
 }
 
+/* Overdubbing doesn't put the input on the output unless Input monitor
+ * asks for it (an interface's own monitoring would be doubled); the new
+ * layer is heard when the loop comes round. */
+static void test_overdub_monitor(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = CD_SR;
+    float *z = calloc((size_t)n * 2, sizeof(float));
+    eng_set_buffer(e, z, n); free(z);
+    float pk; run_silence(e, 4096, &pk);     /* FIFO primed */
+    eng_play_toggle(e); run_silence(e, 4096, &pk);
+    for (int mon = 0; mon < 2; mon++) {
+        e->p[P_MONITOR] = (float)mon;
+        eng_overdub_toggle(e);
+        /* first 0.4 s of the overdub: the layer hasn't come round yet */
+        float in[512 * 2], out[512 * 2], top = 0;
+        static double ph;
+        for (int k = 0; k < 40; k++) {
+            for (int i = 0; i < 512; i++) { float v = 0.5f * (float)sin(ph); ph += 2 * M_PI * 220 / CD_SR; in[2 * i] = in[2 * i + 1] = v; }
+            eng_push_input(e, in, 512);
+            eng_render(e, out, 512);
+            if (k >= 4) for (int i = 0; i < 1024; i++) if (fabsf(out[i]) > top) top = fabsf(out[i]);
+        }
+        eng_overdub_toggle(e);
+        char msg[120];
+        if (mon == 0) {
+            snprintf(msg, sizeof msg, "overdub with Input monitor 0%%: input not on the output (peak %.3f)", top);
+            T(top < 0.01f, msg);
+            /* the layer plays when the loop comes round */
+            run_silence(e, CD_SR, &pk);
+            snprintf(msg, sizeof msg, "  ... and plays back on the next pass (peak %.3f)", pk);
+            T(pk > 0.3f, msg);
+        } else {
+            snprintf(msg, sizeof msg, "overdub with Input monitor 100%%: input heard straight away (peak %.3f)", top);
+            T(top > 0.3f, msg);
+        }
+    }
+    eng_free(e); free(e);
+}
+
 /* A take that doesn't end where it starts: the wrap must not click, and
  * neither may stopping or starting playback. */
 static void test_seam_and_fades(void)
@@ -343,6 +384,7 @@ static void test_decay(void)
 int main(void)
 {
     test_rate_mismatch();
+    test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");
     float pk;

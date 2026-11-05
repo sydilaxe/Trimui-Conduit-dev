@@ -477,9 +477,10 @@ void eng_render(Engine *e, float *out, int frames)
             dry[2 * i] = dl; dry[2 * i + 1] = dr;
         }
         fx_block(&e->fx, p, period, dry, n);
-        /* while overdubbing you hear yourself straight away (the take is
-         * written behind the playhead, so the loop plays it next pass) */
-        float mon_t = e->overdub && p[P_MONITOR] < 1.f ? 1.f : p[P_MONITOR];
+        /* the input is heard through Conduit only as far as Input monitor
+         * says, overdubbing or not: an interface that monitors its own input
+         * would otherwise be heard twice, the second copy late */
+        float mon_t = p[P_MONITOR];
         for (int i = 0; i < n; i++) {
             e->mon_g += (mon_t - e->mon_g) * fade;
             for (int c = 0; c < 2; c++) {
