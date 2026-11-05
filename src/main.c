@@ -72,6 +72,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_THRESH]     = { "Threshold", -60, -6, 1, 6, K_DB, 0 },
     [P_AUTOPLAY]   = { "Loop after rec", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_SAVE_FMT]   = { "Save format", 0, 1, 1, 1, K_ENUM, L_FMT },
+    [P_DUB_ALIGN]  = { "Dub align", -60, 120, 1, 10, K_MS, 0 },
 };
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_END = -100 };
@@ -80,7 +81,7 @@ static const char *const PAGE_NAME[PG_N] = { "LOOP", "FX", "IO", "FILES" };
 static const int PAGE_ROWS[PG_N][14] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_ODUB_KEEP, P_VOLUME, P_MONITOR, ROW_END },
     { P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG, ROW_END },
-    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, ROW_FOLDER, ROW_DIAG, ROW_END },
+    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
 };
 static int page_count(int pg) { int n = 0; while (PAGE_ROWS[pg][n] != ROW_END) n++; return n; }
@@ -100,7 +101,8 @@ typedef struct {
     SDL_AudioDeviceID out_dev, in_dev;
     char in_name[256], out_name[256];      /* "" = system default */
     char in_open[256];                      /* what is actually open */
-    int in_failed;
+    int in_failed, out_block;
+    int b_erased;                           /* B held: the loop was erased */
 
     int page, sel[PG_N], scroll[PG_N];
     char files[MAX_FILES][256]; long fsize[MAX_FILES]; int nfiles;
@@ -193,9 +195,9 @@ static void scan_files(void)
 /* ------------------------------------------------------------ config */
 
 static const int PERSIST[] = { P_ODUB_KEEP, P_VOLUME, P_MONITOR, P_IN_GAIN, P_TRIGGER,
-                               P_THRESH, P_AUTOPLAY, P_SAVE_FMT };
-static const char *const PERSIST_KEY[] = { "odub_keep", "volume", "monitor", "in_gain",
-                                           "trigger", "threshold", "autoplay", "save_format" };
+                               P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN };
+static const char *const PERSIST_KEY[] = { "overdub_keep", "volume", "monitor", "in_gain",
+                                           "trigger", "threshold", "autoplay", "save_format", "dub_align_ms" };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 
 static void load_cfg(void)
@@ -241,6 +243,16 @@ static void save_cfg(void)
 
 /* ------------------------------------------------------------- audio */
 
+/* how far behind the playhead an overdub lands (besides the input FIFO,
+ * which the engine adds): the output's buffer (SDL's block and the driver's,
+ * about two blocks) and the capture block */
+static void set_latency(void)
+{
+    if (G.out_dev) SDL_LockAudioDevice(G.out_dev);
+    G.eng.lat_frames = 2 * (G.out_block ? G.out_block : 512) + G.eng.in_block;
+    if (G.out_dev) SDL_UnlockAudioDevice(G.out_dev);
+}
+
 static void out_cb(void *u, Uint8 *s, int len) { eng_render((Engine *)u, (float *)s, len / 8); }
 static void in_cb(void *u, Uint8 *s, int len) { eng_push_input((Engine *)u, (const float *)s, len / 8); }
 
@@ -262,6 +274,8 @@ static int open_output(void)
         G.out_dev = SDL_OpenAudioDevice(NULL, 0, &w, &got, 0);
     }
     if (!G.out_dev) { fprintf(stderr, "no audio output: %s\n", SDL_GetError()); return -1; }
+    G.out_block = got.samples;
+    set_latency();
     SDL_PauseAudioDevice(G.out_dev, 0);
     return 0;
 }
@@ -292,6 +306,10 @@ static void open_input(int announce)
     G.in_failed = !G.in_dev;
     snprintf(G.in_open, sizeof G.in_open, "%s", G.in_dev ? (want ? want : "System default") : "None");
     if (G.in_dev) {
+        SDL_LockAudioDevice(G.out_dev);
+        G.eng.in_block = got.samples;
+        SDL_UnlockAudioDevice(G.out_dev);
+        set_latency();
         SDL_PauseAudioDevice(G.in_dev, 0);
         if (announce) toast(0, "Input: %s", G.in_open);
     } else if (announce) toast(1, "No capture device: %s", SDL_GetError());
@@ -424,12 +442,15 @@ static void press(int a)
         case A_Y: resample(); break;
         case A_B:
             SDL_LockAudioDevice(G.out_dev);
-            { int ok = eng_undo(&G.eng); SDL_UnlockAudioDevice(G.out_dev);
-              toast(!ok, ok ? "Undid last overdub" : "Nothing to undo"); }
+            { int k = eng_undo(&G.eng); SDL_UnlockAudioDevice(G.out_dev);
+              int left = eng_undo_count(&G.eng);
+              if (!k) toast(1, "Nothing to undo");
+              else toast(0, "%s (%d more undo%s)", k == UNDO_ERASE ? "Loop back (stopped): B plays it" : "Undid overdub",
+                         left, left == 1 ? "" : "s"); }
             break;
         case A_X:
             if (!G.clear_confirm) { G.clear_confirm = 1; G.confirm_until = now + 2500; toast(1, "Press SELECT+X again to clear the buffer"); }
-            else { SDL_LockAudioDevice(G.out_dev); eng_clear(&G.eng); SDL_UnlockAudioDevice(G.out_dev); G.clear_confirm = 0; toast(0, "Buffer cleared"); }
+            else { eng_erase(&G.eng); G.clear_confirm = 0; toast(0, "Loop erased"); }
             break;
         case A_A: save_take(); break;
         case A_MENU: G.running = 0; break;
@@ -459,7 +480,7 @@ static void press(int a)
         if (G.page == PG_FILES) load_file(G.sel[PG_FILES]);
         else eng_rec_button(&G.eng);
         break;
-    case A_B: eng_play_toggle(&G.eng); break;
+    case A_B: G.b_erased = 0; eng_play_toggle(&G.eng); break;
     case A_X: eng_overdub_toggle(&G.eng); break;
     case A_Y:
         if (G.page == PG_FILES) {
@@ -490,6 +511,11 @@ static void set_held(int a, int down)
 static void repeat_tick(void)
 {
     Uint32 now = SDL_GetTicks();
+    /* hold B for a second: stop and erase the loop (no new recording) */
+    if (G.held[A_B] && !G.held[A_SEL] && !G.b_erased && G.page != PG_FILES && now - G.held_since[A_B] >= 1000) {
+        G.b_erased = 1;
+        if (G.eng.len > 0 || G.eng.rec_state != ST_IDLE) { eng_erase(&G.eng); toast(0, "Loop erased"); }
+    }
     for (int a = A_UP; a <= A_RIGHT; a++)
         if (G.held[a] && now >= G.next_rep[a]) {
             press(a);
@@ -698,7 +724,8 @@ static void value_str(int id, char *o, size_t sz)
     case K_DB: snprintf(o, sz, "%.0f dB", v); break;
     case K_GAIN: snprintf(o, sz, "%+.0f dB", v); break;
     case K_MS:
-        if (G.eng.p[P_DLY_SYNC] > 0.5f) snprintf(o, sz, "(synced)");
+        if (id == P_DUB_ALIGN) snprintf(o, sz, "%+.0f ms%s", v, v == 0 ? "  (auto)" : v > 0 ? "  (earlier)" : "  (later)");
+        else if (G.eng.p[P_DLY_SYNC] > 0.5f) snprintf(o, sz, "(synced)");
         else snprintf(o, sz, "%.0f ms", v);
         break;
     case K_INT:
@@ -815,7 +842,7 @@ static void draw(void)
             else if (id == ROW_FOLDER) fit(v, sizeof v, G.rec_dir, 56);
             else snprintf(v, sizeof v, "%s | %d in devs | xrun %u/%u | btn %d",
                           SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
-                          SDL_GetNumAudioDevices(1), (unsigned)e->overruns, (unsigned)(e->underruns / 1000), G.last_raw_btn);
+                          SDL_GetNumAudioDevices(1), (unsigned)e->overruns, (unsigned)e->underruns, G.last_raw_btn);
             text(300, y + 4, id <= ROW_FOLDER ? C_DIM : (on ? C_ACCENT : C_TEXT), id == ROW_DIAG ? 0.85f : 1.f, v);
         }
     }
@@ -828,8 +855,8 @@ static void draw(void)
     fill(0, 728, SW, 40, C_PANEL, 255);
     const char *hint = G.page == PG_FILES
         ? "A load   Y delete   B play   LEFT/RIGHT page jump   L1/R1 tab   MENU quit"
-        : G.held[A_SEL] ? "SELECT +  START bounce  Y resample  B undo  X clear  A save  MENU quit"
-                        : "A rec  B play  X dub  Y rev  START save  L2 fine  R2 coarse  hold SELECT";
+        : G.held[A_SEL] ? "SELECT +  START bounce  Y resample  B undo (x16)  X erase  A save  MENU quit"
+                        : "A rec  B play (hold: erase)  X overdub  Y rev  START save  hold SELECT";
     text(16, 736, C_DIM, 0.95f, hint);
 
     /* toast */
@@ -888,10 +915,10 @@ static int selftest(const char *shot_dir)
 
     float before = e->buf[2 * (e->len / 3)];
     eng_overdub_toggle(e); WAITMS(700); eng_overdub_toggle(e); WAITMS(100);
-    CHECK(e->have_undo, "overdub recorded");
+    CHECK(eng_undo_count(e) == 1, "overdub recorded");
     if (shot_dir) { snprintf(p, sizeof p, "%s/shot_dub.ppm", shot_dir); screenshot(p); }
     SDL_LockAudioDevice(G.out_dev); int u = eng_undo(e); SDL_UnlockAudioDevice(G.out_dev);
-    CHECK(u && e->buf[2 * (e->len / 3)] == before, "undo restored buffer");
+    CHECK(u == UNDO_DUB && e->buf[2 * (e->len / 3)] == before, "undo restored buffer");
 
     int n0 = G.nfiles;
     save_take(); scan_files();
@@ -906,6 +933,11 @@ static int selftest(const char *shot_dir)
     load_file(0); WAITMS(300);
     CHECK(e->len > 0 && e->playing, "reloaded newest file and looping");
     if (shot_dir) { snprintf(p, sizeof p, "%s/shot_files.ppm", shot_dir); screenshot(p); }
+    int kept = e->len;
+    eng_erase(e); WAITMS(200);
+    CHECK(e->len == 0 && !e->playing && e->rec_state == ST_IDLE, "erase stops and empties the loop without recording");
+    SDL_LockAudioDevice(G.out_dev); u = eng_undo(e); SDL_UnlockAudioDevice(G.out_dev);
+    CHECK(u == UNDO_ERASE && e->len == kept, "undo brings an erased loop back");
     fprintf(stderr, "SELFTEST PASS (driver %s, xruns in %u)\n", SDL_GetCurrentAudioDriver(), (unsigned)e->overruns);
     return 0;
 }
