@@ -277,6 +277,7 @@ static int open_output(void)
     }
     if (!G.out_dev) { fprintf(stderr, "no audio output: %s\n", SDL_GetError()); return -1; }
     G.out_block = got.samples;
+    fprintf(stderr, "output: %d Hz, %d ch, block %d\n", got.freq, got.channels, got.samples);
     set_latency();
     SDL_PauseAudioDevice(G.out_dev, 0);
     return 0;
@@ -310,7 +311,9 @@ static void open_input(int announce)
     if (G.in_dev) {
         SDL_LockAudioDevice(G.out_dev);
         G.eng.in_block = got.samples;
+        G.eng.in_restart = 1;
         SDL_UnlockAudioDevice(G.out_dev);
+        fprintf(stderr, "capture '%s': %d Hz, %d ch, block %d\n", G.in_open, got.freq, got.channels, got.samples);
         set_latency();
         SDL_PauseAudioDevice(G.in_dev, 0);
         if (announce) toast(0, "Input: %s", G.in_open);
@@ -846,9 +849,10 @@ static void draw(void)
             if (id == ROW_IN_DEV) fit(v, sizeof v, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", 56);
             else if (id == ROW_OUT_DEV) fit(v, sizeof v, G.out_name[0] ? G.out_name : "System default", 56);
             else if (id == ROW_FOLDER) fit(v, sizeof v, G.rec_dir, 56);
-            else snprintf(v, sizeof v, "%s | %d in devs | xrun %u/%u | btn %d",
+            else snprintf(v, sizeof v, "%s | in %.1f kHz | %d in devs | xrun %u/%u | btn %d",
                           SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
-                          SDL_GetNumAudioDevices(1), (unsigned)e->overruns, (unsigned)e->underruns, G.last_raw_btn);
+                          e->in_ratio * CD_SR / 1000.0, SDL_GetNumAudioDevices(1),
+                          (unsigned)e->overruns, (unsigned)e->underruns, G.last_raw_btn);
             text(300, y + 4, id <= ROW_FOLDER ? C_DIM : (on ? C_ACCENT : C_TEXT), id == ROW_DIAG ? 0.85f : 1.f, v);
         }
     }

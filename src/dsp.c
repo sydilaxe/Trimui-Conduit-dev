@@ -145,6 +145,7 @@ int eng_init(Engine *e, int max_seconds)
     e->lat_frames = 3 * 512;
     e->priming = 1;
     e->margin = 64;
+    e->in_ratio = 1.0;
     return 0;
 }
 
@@ -316,6 +317,41 @@ static inline void loop_read(const float *buf, double *pos, int ls, int le, int 
     *pos = p;
 }
 
+/* Count the capture frames that arrive against the output frames played.
+ * The count since the anchor is exact but for the capture block it was cut
+ * in, so a change is taken only when it is bigger than that error: a device
+ * that agrees with the output (or drifts by a hair) stays at 1.0, one that is off by a whole rate
+ * (44.1 vs 48 kHz) is corrected about a second after it starts. A stall that
+ * throws the count off (two 1 s windows in a row that disagree with the
+ * total) starts the count again from the last window. */
+static void measure_input_clock(Engine *e, uint32_t w)
+{
+    uint64_t now = e->out_total;
+    if (e->rm_state == 0) {
+        if (now - e->rm_o0 >= CD_SR / 2) {
+            e->rm_state = 1; e->rm_bad = 0;
+            e->rm_w0 = e->rm_wl = w; e->rm_o0 = e->rm_ol = now;
+        }
+        return;
+    }
+    if (now - e->rm_ol < CD_SR) return;
+    double win = (double)(uint32_t)(w - e->rm_wl) / (double)(now - e->rm_ol);
+    double el = (double)(now - e->rm_o0);
+    double cum = (double)(uint32_t)(w - e->rm_w0) / el;
+    if (fabs(win - cum) > 0.03 * cum) {
+        if (++e->rm_bad >= 2) { e->rm_w0 = e->rm_wl; e->rm_o0 = e->rm_ol; e->rm_bad = 0; }
+    } else {
+        e->rm_bad = 0;
+        /* small drift (< 0.25%) is the FIFO follower's job */
+        double tol = 2.0 * (e->in_block + 1024) / el;
+        if (tol < 0.0025) tol = 0.0025;
+        if (cum > 0.25 && cum < 4.0 && fabs(cum - e->in_ratio) > tol * cum) e->in_ratio = cum;
+        /* ~10 minutes: start a fresh count before the frame counter wraps */
+        if (el > 600.0 * CD_SR) { e->rm_w0 = e->rm_wl; e->rm_o0 = e->rm_ol; }
+    }
+    e->rm_wl = w; e->rm_ol = now;
+}
+
 void eng_render(Engine *e, float *out, int frames)
 {
     float p[P_COUNT];
@@ -339,6 +375,8 @@ void eng_render(Engine *e, float *out, int frames)
      * underrun, with a bigger safety margin) once it holds the target. */
     uint32_t w = __atomic_load_n(&e->ring_w, __ATOMIC_ACQUIRE);
     uint32_t r = e->ring_r;
+    if (e->in_restart) { e->in_restart = 0; e->rm_state = 0; e->rm_o0 = e->out_total; e->priming = 1; }
+    measure_input_clock(e, w);
     int target = e->in_block + frames + e->margin;
     uint32_t fill = w - r;
     if (e->priming) {
@@ -349,13 +387,7 @@ void eng_render(Engine *e, float *out, int frames)
         r = w - (uint32_t)target; e->ring_frac = 0; e->fill_avg = (float)target; e->overruns++;
     }
     e->fill_avg += ((float)fill - e->fill_avg) * 0.02f;
-    double ratio = 1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f);
-
-    /* overdub lands where the player heard the loop: behind the playhead by
-     * the output + input latency (the devices' and the FIFO's), plus the
-     * user's trim (Dub align) */
-    double comp = (double)e->lat_frames + e->fill_avg + p[P_DUB_ALIGN] * 0.001 * CD_SR;
-    if (comp < 0) comp = 0;
+    double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
     float dry[BLK * 2], inb[BLK * 2];
     int done = 0;
@@ -401,13 +433,24 @@ void eng_render(Engine *e, float *out, int frames)
             float dl = 0, dr = 0;
             if (e->play_g > 0.f && len > 1 && L > 0 && e->rec_state != ST_REC) {
                 int writing = (e->overdub || decay_always) && !e->busy;
-                if (writing && !e->writing) e->last_od = -1;
+                if (writing && !e->writing) {
+                    /* overdub lands where the player heard the loop: behind
+                     * the playhead by the output + input latency (the
+                     * devices' and the FIFO's), plus the user's trim (Dub
+                     * align). Fixed for the whole pass: following the FIFO's
+                     * fill as it wobbles would move the write head against
+                     * the playhead and bend the pitch of what is written. */
+                    double c = (double)e->lat_frames + (double)target / e->in_ratio
+                               + p[P_DUB_ALIGN] * 0.001 * CD_SR;
+                    e->od_comp = c < 0 ? 0 : c;
+                    e->last_od = -1;
+                }
                 e->writing = writing;
                 if (writing) {
                     float wl = e->overdub ? il : 0.f, wr = e->overdub ? ir : 0.f;
                     double pp = e->pos;
                     if (pp < ls || pp >= end) pp = rev ? end - 1 : ls;
-                    pp += (rev ? comp : -comp) * rate;
+                    pp += (rev ? e->od_comp : -e->od_comp) * rate;
                     pp = fmod(pp - ls, (double)L); if (pp < 0) pp += L;
                     int idx = ls + (int)pp; if (idx >= end) idx = end - 1;
                     if (e->last_od < ls || e->last_od >= end) {
@@ -441,7 +484,7 @@ void eng_render(Engine *e, float *out, int frames)
             e->mon_g += (mon_t - e->mon_g) * fade;
             for (int c = 0; c < 2; c++) {
                 float o = dry[2 * i + c] * vol + inb[2 * i + c] * e->mon_g;
-                o = clampf(o, -1.f, 1.f);
+                o = sat(o);   /* loop + monitored input round off instead of clipping */
                 float a = fabsf(o); if (a > outmax) outmax = a;
                 out[2 * (done + i) + c] = o;
             }
@@ -449,6 +492,7 @@ void eng_render(Engine *e, float *out, int frames)
         done += n;
     }
     __atomic_store_n(&e->ring_r, r, __ATOMIC_RELEASE);
+    e->out_total += (uint64_t)frames;
     e->pos_i = (int)e->pos;
     if (e->writing || e->rec_state == ST_REC) e->version++;
     float dec = powf(0.9995f, (float)frames);
