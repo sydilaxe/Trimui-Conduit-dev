@@ -136,19 +136,23 @@ jobs:
           # the release for this tag, a draft left by an earlier run included
           id=$(gh api "$api" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
           if [ -z "$id" ]; then
-            # made as a draft first, so nobody sees it without its files
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
-              --target "$GITHUB_SHA" --title "Conduit $TAG" --notes-file .github/release-notes.md
-            id=$(gh api "$api" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
+            # made as a draft first, so nobody sees it without its files; the id
+            # comes straight back (a new draft can take a while to show in the list)
+            id=$(gh api -X POST "$api" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+                   -f name="Conduit $TAG" -F body=@.github/release-notes.md -F draft=true -q .id)
           fi
+          case "$id" in ''|*[!0-9]*) echo "::error::no release for $TAG (got '$id')"; exit 1;; esac
+          echo "release $TAG is $id"
           for f in $files; do
             for try in 1 2 3 4; do
               # drop any copy already there, finished or cut off half way by an earlier try or run
-              gh api "$api/$id/assets" --paginate -q ".[] | select(.name == \"$f\") | .id" |
-                while read -r a; do gh api -X DELETE "$api/assets/$a"; done
-              gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" && break
+              for a in $(gh api "$api/$id/assets" --paginate -q ".[] | select(.name == \"$f\") | .id"); do
+                gh api -X DELETE "$api/assets/$a"
+              done
+              gh api -X POST "https://uploads.github.com/$api/$id/assets?name=$f" \
+                -H "Content-Type: application/zip" --input "$f" -q .state && break
               [ "$try" = 4 ] && { echo "::error::couldn't upload $f"; exit 1; }
               sleep $((try * 10))
             done
           done
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh api -X PATCH "$api/$id" -F draft=false -f make_latest=true -q .html_url
