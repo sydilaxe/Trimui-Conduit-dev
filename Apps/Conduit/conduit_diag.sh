@@ -1,5 +1,5 @@
 #!/bin/sh
-# Read-only USB audio diagnostics. Run it on the device (SSH or a terminal
+# Read-only USB audio and MIDI diagnostics. Run it on the device (SSH or a terminal
 # app) with a USB interface plugged in; it writes conduit_diag.txt next to
 # itself. Nothing is changed on the system.
 OUT="$(cd "$(dirname "$0")" && pwd)/conduit_diag.txt"
@@ -10,6 +10,7 @@ OUT="$(cd "$(dirname "$0")" && pwd)/conduit_diag.txt"
   echo "== sound cards";     cat /proc/asound/cards 2>/dev/null || echo "no /proc/asound"
   echo "== capture pcms";    grep -i capture /proc/asound/pcm 2>/dev/null
   echo "== /dev/snd";        ls -l /dev/snd 2>/dev/null
+  echo "== midi devices";    cat /proc/asound/seq/clients 2>/dev/null | head -20; ls /dev/snd/midi* 2>/dev/null || echo "no raw MIDI devices (/dev/snd/midiC*D*)"
   echo "== snd modules";     lsmod 2>/dev/null | grep -i snd
   echo "== usb-audio driver"
   ls /sys/bus/usb/drivers/ 2>/dev/null | tr '\n' ' '; echo

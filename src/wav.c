@@ -10,38 +10,72 @@ static void put32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >>
 static uint16_t get16(const uint8_t *p) { return p[0] | p[1] << 8; }
 static uint32_t get32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
-int wav_write(const char *path, const float *st, int frames, int rate, int bits)
+struct WavOut { FILE *f; int bits, rate, ok; uint32_t frames; char path[1024], tmp[1100]; };
+
+static void header(uint8_t *h, int bits, int rate, uint32_t frames)
 {
-    if (bits != 32) bits = 16;
-    uint32_t bps = bits / 8, data = (uint32_t)frames * 2 * bps;
-    uint8_t h[44];
+    uint32_t bps = bits / 8, data = frames * 2 * bps;
     memcpy(h, "RIFF", 4); put32(h + 4, 36 + data); memcpy(h + 8, "WAVEfmt ", 8);
     put32(h + 16, 16); put16(h + 20, bits == 32 ? 3 : 1); put16(h + 22, 2);
     put32(h + 24, rate); put32(h + 28, rate * 2 * bps); put16(h + 32, 2 * bps);
     put16(h + 34, bits); memcpy(h + 36, "data", 4); put32(h + 40, data);
+}
 
-    char tmp[1100];
-    snprintf(tmp, sizeof tmp, "%s.part", path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return -1;
-    int ok = fwrite(h, 1, 44, f) == 44;
+WavOut *wav_open(const char *path, int rate, int bits)
+{
+    WavOut *w = calloc(1, sizeof *w);
+    if (!w) return NULL;
+    w->bits = bits == 32 ? 32 : 16; w->rate = rate;
+    snprintf(w->path, sizeof w->path, "%s", path);
+    snprintf(w->tmp, sizeof w->tmp, "%s.part", path);
+    w->f = fopen(w->tmp, "wb");
+    if (!w->f) { free(w); return NULL; }
+    uint8_t h[44]; header(h, w->bits, rate, 0);
+    w->ok = fwrite(h, 1, 44, w->f) == 44;
+    return w;
+}
+
+int wav_append(WavOut *w, const float *st, int frames)
+{
+    uint32_t bps = w->bits / 8;
     uint8_t chunk[8192];
     int per = (int)(sizeof chunk / (2 * bps));
-    for (int i = 0; ok && i < frames; i += per) {
+    for (int i = 0; w->ok && i < frames; i += per) {
         int n = frames - i < per ? frames - i : per;
         for (int j = 0; j < n * 2; j++) {
             float v = st[(size_t)i * 2 + j];
             if (v > 1.f) v = 1.f; else if (v < -1.f) v = -1.f;
-            if (bits == 32) memcpy(chunk + j * 4, &v, 4);  /* little-endian targets */
+            if (w->bits == 32) memcpy(chunk + j * 4, &v, 4);  /* little-endian targets */
             else put16(chunk + j * 2, (uint16_t)(int16_t)(v * 32767.f + (v >= 0 ? 0.5f : -0.5f)));
         }
-        ok = fwrite(chunk, 1, (size_t)n * 2 * bps, f) == (size_t)n * 2 * bps;
+        w->ok = fwrite(chunk, 1, (size_t)n * 2 * bps, w->f) == (size_t)n * 2 * bps;
     }
-    ok = ok && fflush(f) == 0 && fsync(fileno(f)) == 0;
-    ok = (fclose(f) == 0) && ok;
-    if (!ok || rename(tmp, path) != 0) { remove(tmp); return -1; }
-    sync();
-    return 0;
+    if (w->ok) w->frames += (uint32_t)frames;
+    return w->ok ? 0 : -1;
+}
+
+int wav_close(WavOut *w, int keep)
+{
+    int ok = w->ok && keep;
+    if (ok) {
+        uint8_t h[44]; header(h, w->bits, w->rate, w->frames);
+        ok = fseek(w->f, 0, SEEK_SET) == 0 && fwrite(h, 1, 44, w->f) == 44;
+    }
+    ok = ok && fflush(w->f) == 0 && fsync(fileno(w->f)) == 0;
+    ok = (fclose(w->f) == 0) && ok;
+    if (!ok || rename(w->tmp, w->path) != 0) { remove(w->tmp); ok = 0; }
+    free(w);
+    return ok ? 0 : -1;
+}
+
+int wav_write(const char *path, const float *st, int frames, int rate, int bits)
+{
+    WavOut *w = wav_open(path, rate, bits);
+    if (!w) return -1;
+    wav_append(w, st, frames);
+    int r = wav_close(w, 1);
+    if (!r) sync();
+    return r;
 }
 
 float *wav_read(const char *path, int dst_rate, int max_frames, int *out_frames)

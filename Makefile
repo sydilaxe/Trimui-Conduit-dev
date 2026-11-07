@@ -20,7 +20,7 @@ CPU      := cortex_a53
 APP      := conduit
 APPDIR   := Apps/Conduit
 SDL_INC  := third_party/SDL2-2.30.9-headers
-SRC      := src/main.c src/dsp.c src/wav.c
+SRC      := src/main.c src/dsp.c src/wav.c src/midi.c
 HDR      := $(wildcard src/*.h)
 VERSION  ?= $(shell sed -n 's/^\#define CONDUIT_VERSION "\([^"]*\)".*/\1/p' src/main.c)
 
@@ -68,9 +68,9 @@ build/trimui build/desktop:
 	mkdir -p $@
 
 # --- tests (on this computer)
-build/test_dsp: tests/test_dsp.c src/dsp.c src/wav.c src/dsp.h src/wav.h
+build/test_dsp: tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/dsp.h src/wav.h src/midi.h
 	@mkdir -p build
-	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ tests/test_dsp.c src/dsp.c src/wav.c -lm
+	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ tests/test_dsp.c src/dsp.c src/wav.c src/midi.c -lm -lpthread
 
 test: build/test_dsp
 	build/test_dsp
