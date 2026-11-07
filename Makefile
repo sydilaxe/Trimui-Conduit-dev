@@ -20,7 +20,7 @@ CPU      := cortex_a53
 APP      := conduit
 APPDIR   := Apps/Conduit
 SDL_INC  := third_party/SDL2-2.30.9-headers
-SRC      := src/main.c src/dsp.c src/wav.c src/midi.c
+SRC      := src/main.c src/dsp.c src/wav.c src/midi.c src/bloom.c src/midiverb2.c src/verb.c
 HDR      := $(wildcard src/*.h)
 VERSION  ?= $(shell sed -n 's/^\#define CONDUIT_VERSION "\([^"]*\)".*/\1/p' src/main.c)
 
@@ -68,9 +68,9 @@ build/trimui build/desktop:
 	mkdir -p $@
 
 # --- tests (on this computer)
-build/test_dsp: tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/dsp.h src/wav.h src/midi.h
+build/test_dsp: tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/bloom.c src/midiverb2.c src/verb.c src/dsp.h src/wav.h src/midi.h src/bloom.h src/midiverb2.h src/verb.h
 	@mkdir -p build
-	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ tests/test_dsp.c src/dsp.c src/wav.c src/midi.c -lm -lpthread
+	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/bloom.c src/midiverb2.c src/verb.c -lm -lpthread
 
 test: build/test_dsp
 	build/test_dsp

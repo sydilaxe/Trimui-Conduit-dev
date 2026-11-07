@@ -3,8 +3,10 @@
 Conduit is a four-track USB-audio looper / sampler for the TrimUI Brick, Brick Hammer and Brick Pro running
 TrimUI OS, MustardOS or KNULLI (Allwinner A133P: four Cortex-A53 cores, 1 GB, a 1024x768 screen).
 It records from any capture device SDL sees (USB interfaces first, followed on hot-plug) into four
-tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs and runs a master FX
-chain, maps every control to MIDI, and saves the mix and each track as WAVs to the SD card. C on SDL2
+tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs, runs a master FX
+chain and a Bloom reverb send (src/verb.c: the MidiVerb II's programs 45/49 ported exactly in
+src/midiverb2.c, or adjustable in src/bloom.c), maps every control to MIDI, and
+saves the mix and each track as WAVs to the SD card. C on SDL2
 only; MIDI is read from the kernel's raw devices (`/dev/snd/midiC*D*`), with no extra libraries.
 
 The build follows the other TrimUI apps (sydilaxe/Trimui-RadioScan-dev, Trimui-Columbiastreet-dev):
@@ -29,6 +31,12 @@ Releases take their version from the tag (CI builds with `make VERSION=<tag with
 as `CONDUIT_VERSION`); `CONDUIT_VERSION` in `src/main.c` is the default for plain builds, and the
 README's **Latest release** line must show it (CI checks). When you change a control, update the
 README's Controls section.
+
+## License
+
+Conduit is GPL-3.0-or-later (`LICENSE`); every source file starts with
+`/* SPDX-License-Identifier: GPL-3.0-or-later */`, and new ones should too. That makes
+GPL-3 code such as thement's midiverb_emulator usable here, with credit.
 
 ## Identity
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* MIDI input over USB: the kernel's raw MIDI devices (/dev/snd/midiC*D*),
  * read on a thread of its own, no libraries. Clock goes straight to the
  * engine; notes, CCs and pitch bend are queued for the UI. */
