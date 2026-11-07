@@ -6,7 +6,10 @@ It records from any capture device SDL sees (USB interfaces first, followed on h
 tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs, runs a master FX
 chain and a Bloom reverb send (src/verb.c: the MidiVerb II's programs 45/49 ported exactly in
 src/midiverb2.c, or adjustable in src/bloom.c), maps every control to MIDI, and
-saves the mix and each track as WAVs to the SD card. C on SDL2
+saves the mix and each track as WAVs to the SD card. Leading (Sync to Internal, or Auto with no clock
+coming) it sends MIDI clock; and Bricks on a hub follow it over the USB clock link (src/link.c, the same
+link as Columbia Street's: a follower's bottom port as a USB gadget through configfs and FunctionFS, the
+leader sending clock and where its sound is through usbfs), or it follows one the same way. C on SDL2
 only; MIDI is read from the kernel's raw devices (`/dev/snd/midiC*D*`), with no extra libraries.
 
 The build follows the other TrimUI apps (sydilaxe/Trimui-RadioScan-dev, Trimui-Columbiastreet-dev):

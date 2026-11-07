@@ -3,6 +3,8 @@
 #include "../src/dsp.h"
 #include "../src/wav.h"
 #include "../src/midi.h"
+#include "../src/link.h"
+#include <sys/stat.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -650,6 +652,174 @@ static void test_midi_clock(void)
     eng_free(e); free(e);
 }
 
+/* The USB link and the clock out: a leading Brick's positions hold the
+ * transport within a fraction of a millisecond at any tempo; Auto follows
+ * them (or a clock) while they come, else the first loop; Start / Stop can
+ * be ignored; the clock out sends 24 ticks a beat, Start or song position
+ * and Continue, and Stop; the link's USB plumbing */
+static void test_link_sync(void)
+{
+    char msg[200];
+    static const double tempos[] = { 137.37, 200.0, 224.5, 250.0 };
+    double worst_ms[4];
+    int all_follow = 1, exact = 1;
+    for (int k = 0; k < 4; k++) {
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 8);
+        e->now = fake_now; fake_t = 200.0; e->lat_frames = 0;
+        e->p[P_CLOCK] = CLOCK_AUTO;
+        double bpm = tempos[k], ts0 = fake_t, next_send = fake_t, lead0 = 37.25, worst = 0;
+        float in[512 * 2] = { 0 }, out[512 * 2];
+        srand(11);
+        for (int b = 0; b < 800; b++) {   /* ~8.5 s */
+            double t0 = fake_t, t1 = fake_t + 512.0 / CD_SR;
+            /* the leader sends every 20 ms; each arrives 0.15 to 0.45 ms later, at random */
+            while (next_send < t1) {
+                double arrive = next_send + 0.00015 + (rand() % 301) * 1e-6;
+                double lead = lead0 + (next_send - ts0) * bpm / 15.0;
+                if (arrive < t1) eng_link_pos(e, lead, bpm, 1, arrive);
+                next_send += 0.02;
+            }
+            eng_push_input(e, in, 512);
+            eng_render(e, out, 512);
+            fake_t = t1;
+            (void)t0;
+            if (b > 300) {   /* settled: the transport against the leader's sound at the block's end */
+                double truth = (lead0 + (t1 - ts0) * bpm / 15.0) / 16.0;
+                double err = fabs(e->tr.phase - truth) * (60.0 / bpm * 4) * 1000;
+                if (err > worst) worst = err;
+            }
+        }
+        worst_ms[k] = worst;
+        all_follow &= e->tr.following && e->tr.linked;
+        exact &= fabs(e->tr.bpm - bpm) < 0.001;
+        if (k == 3) {
+            /* the leader goes quiet: after half a second Auto is back on the first loop */
+            for (int b = 0; b < 60; b++) { eng_push_input(e, in, 512); eng_render(e, out, 512); fake_t += 512.0 / CD_SR; }
+            T(!e->tr.following, "link: Auto goes back to the first loop when the leader goes quiet");
+        }
+        eng_free(e); free(e);
+    }
+    snprintf(msg, sizeof msg, "link: the transport within %.3f / %.3f / %.3f / %.3f ms of the leader's sound at "
+             "137.37 / 200 / 224.5 / 250 BPM, its exact tempo, messages up to 0.45 ms late",
+             worst_ms[0], worst_ms[1], worst_ms[2], worst_ms[3]);
+    T(all_follow && exact && worst_ms[0] < 0.25 && worst_ms[1] < 0.25 && worst_ms[2] < 0.25 && worst_ms[3] < 0.25, msg);
+
+    /* Start / Stop ignored: the clock alone runs the transport, Stop doesn't stop it */
+    {
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 8);
+        e->now = fake_now; fake_t = 300.0; e->lat_frames = 0;
+        e->p[P_CLOCK] = CLOCK_MIDI; e->p[P_CLOCK_START] = START_IGNORE;
+        eng_midi_clock(e, 0xFC, fake_t);
+        tick_iv = 60.0 / (120 * CD_PPQ); tick_next = fake_t + 0.001;
+        clocked(e, 60, NULL);
+        int runs = e->tr.running;
+        eng_midi_clock(e, 0xFC, fake_t);
+        clocked(e, 20, NULL);
+        T(runs && e->tr.running, "Start/Stop ignored: the clock runs the transport, Stop passes by");
+        tick_iv = 0;
+        eng_free(e); free(e);
+    }
+
+    /* Auto with nothing coming: the first loop leads, and eng_heard says where its sound is */
+    {
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 8);
+        e->now = fake_now; fake_t = 400.0; e->lat_frames = 0;
+        e->p[P_CLOCK] = CLOCK_AUTO;
+        e->tr.cyc = 2.0 * CD_SR; e->tr.phase = 0; e->tr.running = 1;   /* a 2 s bar from a first loop */
+        float in[512 * 2] = { 0 }, out[512 * 2];
+        for (int b = 0; b < 10; b++) { eng_push_input(e, in, 512); eng_render(e, out, 512); fake_t += 512.0 / CD_SR; }
+        double pos, bpm; int run, fol;
+        int ok = eng_heard(e, fake_t, &pos, &bpm, &run, &fol);
+        snprintf(msg, sizeof msg, "Auto with no clock: leads from the first loop (%.1f BPM, %.3f 16ths heard)", bpm, pos);
+        T(ok && run && !fol && fabs(bpm - 120) < 0.01 && fabs(pos - (fake_t - 400.0) * 8) < 0.1, msg);
+        eng_free(e); free(e);
+    }
+
+    /* the clock out: 4 s at 120 BPM from the top, then started mid-bar, then stopped */
+    {
+        MidiClockOut co = { 0 };
+        uint8_t out[32];
+        int ticks = 0, starts = 0, first_start = -1, k0 = 0;
+        for (int ms = 0; ms <= 4000; ms++) {
+            double pos = ms * 0.001 * 120 / 15.0;
+            int n = midi_clock_out(&co, pos, 1, out, sizeof out);
+            for (int i = 0; i < n; i++) {
+                if (out[i] == 0xFA) { starts++; if (first_start < 0) first_start = k0; }
+                ticks += out[i] == 0xF8;
+                k0++;
+            }
+        }
+        int n = midi_clock_out(&co, 32.0, 0, out, sizeof out);
+        int stops = n == 1 && out[0] == 0xFC;
+        snprintf(msg, sizeof msg, "clock out: Start first, %d ticks in 4 s at 120 BPM (want 192), Stop", ticks);
+        T(starts == 1 && first_start == 0 && ticks == 192 && stops, msg);
+        memset(&co, 0, sizeof co);
+        n = midi_clock_out(&co, 5.3, 1, out, sizeof out);
+        int spp = n == 3 && out[0] == 0xF2 && out[1] == 6 && out[2] == 0;
+        int early = midi_clock_out(&co, 5.9, 1, out, sizeof out) == 0;
+        n = midi_clock_out(&co, 6.01, 1, out, sizeof out);
+        int cont = n >= 1 && out[0] == 0xFB;
+        n = midi_clock_out(&co, 6.2, 1, out, sizeof out);
+        T(spp && early && cont && n == 1 && out[0] == 0xF8, "clock out: started mid-bar, song position 6, Continue on the 16th, then ticks");
+    }
+
+    /* the position message through the parser; a CC after it still parsed */
+    {
+        uint8_t b[20];
+        int n = midi_link_pos(b, sizeof b, 123.456, 174.321, 1);
+        b[n++] = 0xB0, b[n++] = 7, b[n++] = 99;
+        MidiParser ps = { 0 };
+        MidiMsg m;
+        int got = 0, cc = 0;
+        for (int i = 0; i < n; i++) {
+            if (midi_parse(&ps, b[i], &m) && m.type == MM_CC && m.num == 7 && m.val == 99) cc = 1;
+            if (ps.sx_done) {
+                ps.sx_done = 0;
+                uint64_t pp = 0; uint32_t bb = 0;
+                for (int k = 0; k < 5; k++) pp |= (uint64_t)ps.sx[3 + k] << (7 * k);
+                for (int k = 0; k < 3; k++) bb |= (uint32_t)ps.sx[8 + k] << (7 * k);
+                got = ps.sxn == 12 && fabs(pp / 65536.0 - 123.456) < 1e-4 && bb == 174321 && ps.sx[11] == 1;
+            }
+        }
+        T(n == 17 && got && cc, "link: the position message through the parser, and a CC after it");
+    }
+
+    /* the follower's USB descriptors, and the leader finding a linked Brick in a
+     * stand-in sysfs, not a mass-storage gadget with the same ids */
+    {
+        uint8_t d[256];
+        int dn = link_descriptors(d, sizeof d);
+        T(dn == 52 && d[0] == 3 && d[25] == 0xff && d[26] == LINK_SUBCLASS && d[27] == LINK_PROTOCOL && d[31] == 1 &&
+          d[32] == 2 && d[49] == 0 && d[50] == 2 && link_strings(d, sizeof d) > 16,
+          "link: the FunctionFS descriptors (vendor interface, one bulk OUT endpoint)");
+        char fs[] = "build/fakeusb-XXXXXX";
+        if (!mkdtemp(fs)) { T(0, "link: a stand-in sysfs"); return; }
+        const char *const tree[][2] = {
+            { "1-1.3/idVendor", "1d6b" }, { "1-1.3/idProduct", "0104" }, { "1-1.3/busnum", "1" }, { "1-1.3/devnum", "5" },
+            { "1-1.3/1-1.3:1.0/bInterfaceClass", "ff" }, { "1-1.3/1-1.3:1.0/bInterfaceSubClass", "42" },
+            { "1-1.3/1-1.3:1.0/bInterfaceProtocol", "4c" }, { "1-1.3/1-1.3:1.0/ep_02/direction", "out" },
+            { "1-1.3/1-1.3:1.0/ep_02/type", "Bulk" }, { "1-1.3/1-1.3:1.0/ep_02/bEndpointAddress", "02" },
+            { "1-1.4/idVendor", "1d6b" }, { "1-1.4/idProduct", "0104" }, { "1-1.4/busnum", "1" }, { "1-1.4/devnum", "6" },
+            { "1-1.4/1-1.4:1.0/bInterfaceClass", "08" },
+        };
+        char fp[600];
+        for (size_t k = 0; k < sizeof tree / sizeof tree[0]; k++) {
+            snprintf(fp, sizeof fp, "%s/%s", fs, tree[k][0]);
+            for (char *c = fp + strlen(fs) + 1; *c; c++)
+                if (*c == '/') { *c = 0; mkdir(fp, 0755); *c = '/'; }
+            FILE *f = fopen(fp, "w");
+            if (f) { fprintf(f, "%s\n", tree[k][1]); fclose(f); }
+        }
+        LinkDev ld[4];
+        int found = link_find(fs, ld, 4);
+        T(found == 1 && ld[0].bus == 1 && ld[0].dev == 5 && ld[0].ep == 2,
+          "link: a linked Brick found on the hub, the mass-storage gadget with its ids passed over");
+    }
+}
+
 static void test_midi_parse(void)
 {
     const uint8_t bytes[] = { 0x90, 60, 100, 62, 0, 0xB0, 7, 0xF8, 64, 0xE0, 0x00, 0x40,
@@ -1193,6 +1363,7 @@ int main(void)
     test_mixdown();
     test_midi_clock();
     test_midi_parse();
+    test_link_sync();
     test_fx_send();
     test_warm_clip();
     test_reverb();

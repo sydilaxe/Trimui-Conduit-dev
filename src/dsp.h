@@ -30,13 +30,17 @@ typedef enum {
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
     /* sync */
-    P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS,
+    P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
     P_COUNT
 } ParamId;
 
 typedef enum { ST_IDLE, ST_ARMED, ST_REC } RecState;
 enum { SYNC_ON = 0, SYNC_FREE = 1 };       /* P_SYNC */
-enum { CLOCK_INTERNAL = 0, CLOCK_MIDI = 1 }; /* P_CLOCK */
+/* P_CLOCK: the first loop (and Conduit leads), the clock coming in, or
+ * either: the clock (or a leading Brick on the USB link) while one comes,
+ * else the first loop */
+enum { CLOCK_INTERNAL = 0, CLOCK_MIDI = 1, CLOCK_AUTO = 2 };
+enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start / Stop / Continue */
 
 /* Undo: up to CD_UNDO_LEVELS steps per track, newest last. An overdub keeps a
  * copy of the take as it was before; an erase keeps only the take's length
@@ -121,10 +125,22 @@ typedef struct {
     int ext_run, seen_transport, locked;
     double err_avg;
     volatile double bpm;       /* measured MIDI clock tempo (0: none), for the UI */
+    /* a leading Brick's position over the USB link (link.h): where its sound
+     * was (16ths) at lk_t, its exact tempo, whether it plays; lk_t 0: none */
+    double lk_t, lk_pos, lk_bpm;
+    int lk_play;
+    volatile int following;    /* the transport follows a clock or a Brick now (not the first loop) */
+    volatile int linked;       /* ...a leading Brick's positions */
+    /* where the sound is, for the clock out (written by the audio thread each
+     * block, read by the MIDI thread through snap_seq): the phase (bars) heard
+     * at snap_t (seconds), bars per second, beats per bar, running */
+    volatile uint32_t snap_seq;
+    double snap_t, snap_phase, snap_rate;
+    int snap_beats, snap_run, snap_follow;
 } Transport;
 
 #define CD_EVQ 1024
-typedef struct { uint8_t msg; double t; } ClockEv;
+typedef struct { uint8_t msg; double t, pos, bpm; } ClockEv; /* pos, bpm: a link position (msg 0xF0 / 0xF1) */
 
 typedef struct {
     float p[P_COUNT];          /* global params (the per-track ones are in Track.p) */
@@ -179,6 +195,14 @@ void eng_render(Engine *e, float *out, int frames);
  * 0xFC stop) that arrived at time t (seconds, on e->now's clock) */
 void eng_midi_clock(Engine *e, uint8_t msg, double t);
 double eng_clock(void);        /* the monotonic clock (seconds) MIDI times are on */
+/* MIDI thread: a leading Brick's position over the USB link (link.h): where
+ * its sound was at time t (16ths since its start), its exact tempo, whether
+ * it plays. One producer at a time with eng_midi_clock. */
+void eng_link_pos(Engine *e, double pos16, double bpm, int playing, double t);
+/* MIDI thread: where the sound is at time t (16ths since the transport
+ * started), the tempo, and whether it runs and follows something else;
+ * 0 until the audio has run */
+int eng_heard(Engine *e, double t, double *pos16, double *bpm, int *running, int *following);
 
 /* UI-side actions on track t. Those marked [lock] must be called with the
  * output device locked (or before audio starts). */
