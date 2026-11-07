@@ -31,6 +31,12 @@ as `CONDUIT_VERSION`); `CONDUIT_VERSION` in `src/main.c` is the default for plai
 README's **Latest release** line must show it (CI checks). When you change a control, update the
 README's Controls section.
 
+## License
+
+Conduit is GPL-3.0-or-later (`LICENSE`); every source file starts with
+`/* SPDX-License-Identifier: GPL-3.0-or-later */`, and new ones should too. That makes
+GPL-3 code such as thement's midiverb_emulator usable here, with credit.
+
 ## Identity
 
 This repo is in the `sydilaxe` lane: commits are authored and pushed as `sydilaxe` (that account's

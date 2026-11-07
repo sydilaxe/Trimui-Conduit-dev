@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Unit tests for the Conduit engine and WAV I/O (built with ASan/UBSan). */
 #include "../src/dsp.h"
 #include "../src/wav.h"

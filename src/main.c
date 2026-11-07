@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Conduit — four-track USB audio looper / sampler for TrimUI Brick & Brick Pro.
  * SDL2 only (audio, video, input); runs on TrimUI OS, MustardOS and KNULLI.

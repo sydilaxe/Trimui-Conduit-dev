@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "midi.h"
 #include <dirent.h>
 #include <errno.h>

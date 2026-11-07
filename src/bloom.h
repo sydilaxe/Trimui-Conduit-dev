@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Bloom: a long, swelling stereo reverb after the Alesis MidiVerb II "Bloom"
  * programs (45: Bloom 1, 8 s; 49: Bloom 2, 7 s, the same with a pre-delay).
  *

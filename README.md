@@ -309,5 +309,8 @@ no code with it either).
 
 ## License
 
-MIT for Conduit's code. The embedded glyphs come from DejaVu fonts, which
+Conduit is free software under the GNU General Public License, version 3
+or (at your option) any later version: see [LICENSE](LICENSE). You may
+copy, change and share it, as long as what you share stays under the same
+license with its source. The embedded glyphs come from DejaVu fonts, which
 use the Bitstream Vera license.

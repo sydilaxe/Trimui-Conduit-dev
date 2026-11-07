@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 /* Write stereo float frames as WAV. bits = 16 (PCM) or 32 (IEEE float).
  * Data is fsync'd before returning so it survives a sudden power-off. */

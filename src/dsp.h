@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Conduit audio engine: capture -> four looper tracks -> pan/mix -> master FX -> output. */
 #pragma once
 #include <stddef.h>
