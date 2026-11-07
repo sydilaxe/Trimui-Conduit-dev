@@ -1,9 +1,11 @@
 # AGENTS.md
 
-Conduit is a USB-audio sampler / looper for the TrimUI Brick, Brick Hammer and Brick Pro running
+Conduit is a four-track USB-audio looper / sampler for the TrimUI Brick, Brick Hammer and Brick Pro running
 TrimUI OS, MustardOS or KNULLI (Allwinner A133P: four Cortex-A53 cores, 1 GB, a 1024x768 screen).
-It records from any capture device SDL sees (USB interfaces first, followed on hot-plug), loops,
-pitches, overdubs and runs an FX chain, and saves WAVs to the SD card. C on SDL2 only.
+It records from any capture device SDL sees (USB interfaces first, followed on hot-plug) into four
+tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs and runs a master FX
+chain, maps every control to MIDI, and saves the mix and each track as WAVs to the SD card. C on SDL2
+only; MIDI is read from the kernel's raw devices (`/dev/snd/midiC*D*`), with no extra libraries.
 
 The build follows the other TrimUI apps (sydilaxe/Trimui-RadioScan-dev, Trimui-Columbiastreet-dev):
 `make` cross-compiles `build/trimui/conduit` with zig (aarch64, glibc 2.28) against the SDL2 headers
@@ -18,8 +20,9 @@ folder in `Conduit/`, plus `mustardos/mux_launch.sh`, `wake_screen.sh` (run thro
 glyph) and `build/Conduit-knulli.zip` (`knulli/Conduit.sh` and `conduit/` for
 `/userdata/roms/ports`). Keep `mux_launch.sh` out of the TrimUI OS zip.
 
-`make test` runs the engine and WAV unit tests (ASan/UBSan); `make test-e2e` runs the desktop build
-headless on SDL's disk audio driver (`tests/e2e.sh`: record, loop, FX, save, reload). Keep both
+`make test` runs the engine, MIDI parser and WAV unit tests (ASan/UBSan); `make test-e2e` runs the
+desktop build headless on SDL's disk audio driver (`tests/e2e.sh`: two synced tracks, FX, overdub,
+save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`). Keep both
 passing; CI runs them and checks the packages in `.github/workflows/build.yml`.
 
 Releases take their version from the tag (CI builds with `make VERSION=<tag without v>`, compiled in

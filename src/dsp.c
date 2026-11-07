@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define CMD_REC  1
 #define CMD_PLAY 2
@@ -9,20 +10,35 @@
 #define CMD_CLEAR 8
 #define BLK 128
 #define MIN_TAKE (CD_SR / 50)  /* 20 ms */
+#define JUMP_TOL 4             /* frames: a locked playhead further off than this jumps (crossfaded) */
 
 static inline float clampf(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
+static inline double clampd(double x, double a, double b) { return x < a ? a : x > b ? b : x; }
 static inline float db2lin(float db) { return powf(10.f, db / 20.f); }
+
+double eng_clock(void)
+{
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+void eng_default_track(float *tp)
+{
+    memset(tp, 0, sizeof(float) * P_TRACK_N);
+    tp[P_LOOP_START] = 0.f; tp[P_LOOP_END] = 1.f;
+    tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
+    tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_SYNC] = SYNC_ON;
+}
 
 void eng_default_params(float *p)
 {
     memset(p, 0, sizeof(float) * P_COUNT);
-    p[P_LOOP_START] = 0.f;  p[P_LOOP_END] = 1.f;
-    p[P_PITCH] = 0.f;       p[P_FINE] = 0.f;  p[P_REVERSE] = 0.f;
-    p[P_DECAY] = 0.02f;    p[P_DECAY_MODE] = 0.f;
-      p[P_VOLUME] = 0.9f; p[P_MONITOR] = 0.f;
+    eng_default_track(p);   /* unused slots, kept sane */
+    p[P_MASTER] = 1.f; p[P_MONITOR] = 0.f;
     eng_reset_fx_params(p);
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
+    p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
 }
 
 void eng_reset_fx_params(float *p)
@@ -46,11 +62,11 @@ void fx_free(FxState *f) { free(f->dly); f->dly = NULL; }
 
 static const float sync_div[] = { 0.f, 1.f / 16, 1.f / 8, 1.f / 4, 1.f / 3, 1.f / 2, 1.f };
 
-static float dly_target(const float *p, double loop_period)
+static float dly_target(const float *p, double bar)
 {
     int s = (int)p[P_DLY_SYNC];
     float t;
-    if (s > 0 && s < 7 && loop_period > 0) t = (float)(loop_period * sync_div[s]);
+    if (s > 0 && s < 7 && bar > 0) t = (float)(bar * sync_div[s]);
     else t = p[P_DLY_TIME] * 0.001f * CD_SR;
     return clampf(t, 16.f, (float)(CD_DLY_MAX - 4));
 }
@@ -65,7 +81,7 @@ void fx_reset(FxState *f, const float *p)
     f->cutoff_s = p[P_CUTOFF];
 }
 
-void fx_block(FxState *f, const float *p, double loop_period, float *st, int n)
+void fx_block(FxState *f, const float *p, double bar, float *st, int n)
 {
     int mode = (int)p[P_FILT_MODE];
     float drive = p[P_DRIVE];
@@ -74,7 +90,7 @@ void fx_block(FxState *f, const float *p, double loop_period, float *st, int n)
     float fb = clampf(p[P_DLY_FB], 0.f, 0.95f);
     float mix = p[P_DLY_MIX];
     int ping = p[P_PINGPONG] > 0.5f;
-    float tgt = dly_target(p, loop_period);
+    float tgt = dly_target(p, bar);
 
     /* smooth cutoff once per block */
     f->cutoff_s += (p[P_CUTOFF] - f->cutoff_s) * 0.25f;
@@ -114,7 +130,8 @@ void fx_block(FxState *f, const float *p, double loop_period, float *st, int n)
         float rp = (float)f->dly_w - f->dly_time_s;
         while (rp < 0) rp += CD_DLY_MAX;
         int r0 = (int)rp;
-        if (r0 >= CD_DLY_MAX) { r0 = 0; rp = 0; }  /* float rounding at the wrap */ float fr = rp - r0; int r1 = r0 + 1 == CD_DLY_MAX ? 0 : r0 + 1;
+        if (r0 >= CD_DLY_MAX) { r0 = 0; rp = 0; }  /* float rounding at the wrap */
+        float fr = rp - r0; int r1 = r0 + 1 == CD_DLY_MAX ? 0 : r0 + 1;
         float dl = f->dly[2 * r0] * (1 - fr) + f->dly[2 * r1] * fr;
         float dr = f->dly[2 * r0 + 1] * (1 - fr) + f->dly[2 * r1 + 1] * fr;
         f->damp[0] += 0.4f * (dl - f->damp[0]);
@@ -136,9 +153,15 @@ void fx_block(FxState *f, const float *p, double loop_period, float *st, int n)
 int eng_init(Engine *e, int max_seconds)
 {
     memset(e, 0, sizeof(*e));
-    e->cap = max_seconds * CD_SR;
-    e->buf = calloc((size_t)e->cap * 2, sizeof(float));
-    if (!e->buf || fx_init(&e->fx)) { eng_free(e); return -1; }
+    for (int i = 0; i < CD_TRACKS; i++) {
+        Track *t = &e->trk[i];
+        t->cap = max_seconds * CD_SR;
+        t->buf = calloc((size_t)t->cap * 2, sizeof(float));
+        if (!t->buf) { eng_free(e); return -1; }
+        eng_default_track(t->p);
+        t->last_od = -1;
+    }
+    if (fx_init(&e->fx)) { eng_free(e); return -1; }
     eng_default_params(e->p);
     fx_reset(&e->fx, e->p);
     e->in_block = 512;
@@ -146,28 +169,33 @@ int eng_init(Engine *e, int max_seconds)
     e->priming = 1;
     e->margin = 64;
     e->in_ratio = 1.0;
+    e->tr.ticks = -1;
     return 0;
 }
 
+static void undo_reset(Track *t);
+
 void eng_free(Engine *e)
 {
-    free(e->buf); e->buf = NULL;
-    for (int i = 0; i < e->undo_n; i++) free(e->undo[i].data);
-    e->undo_n = 0; e->undo_bytes = 0;
+    for (int i = 0; i < CD_TRACKS; i++) {
+        Track *t = &e->trk[i];
+        free(t->buf); t->buf = NULL;
+        undo_reset(t);
+    }
     fx_free(&e->fx);
 }
 
-double eng_rate(const float *p)
+double eng_rate(const float *tp, float bend)
 {
-    return pow(2.0, (p[P_PITCH] + p[P_FINE] / 100.0) / 12.0);
+    return pow(2.0, (tp[P_PITCH] + tp[P_FINE] / 100.0 + bend) / 12.0);
 }
 
 /* The loop region [ls, le) as set by the user, and the crossfade length xf.
  * What plays is [ls, le - xf): its first xf frames are blended with the last
  * xf frames of the region, so the seam where it wraps doesn't click. */
-static void loop_region(int len, const float *p, int *ls, int *le, int *xf)
+static void loop_region(int len, const float *tp, int *ls, int *le, int *xf)
 {
-    float a = clampf(p[P_LOOP_START], 0.f, 1.f), b = clampf(p[P_LOOP_END], 0.f, 1.f);
+    float a = clampf(tp[P_LOOP_START], 0.f, 1.f), b = clampf(tp[P_LOOP_END], 0.f, 1.f);
     if (b < a) { float t = a; a = b; b = t; }
     int s = (int)(a * len), en = (int)(b * len);
     if (en > len) en = len;
@@ -177,10 +205,31 @@ static void loop_region(int len, const float *p, int *ls, int *le, int *xf)
     *ls = s; *le = en; *xf = f;
 }
 
-void eng_loop_range(const Engine *e, int *ls, int *le)
+void eng_loop_range(const Engine *e, int t, int *ls, int *le)
 {
-    int xf; loop_region(e->len, e->p, ls, le, &xf); *le -= xf;
+    int xf; loop_region(e->trk[t].len, e->trk[t].p, ls, le, &xf); *le -= xf;
 }
+
+static int lock_mode(const Track *t) { return t->synced && t->p[P_SYNC] < 0.5f; }
+int eng_track_synced(const Engine *e, int t) { return lock_mode(&e->trk[t]) && e->trk[t].len > 0; }
+int eng_track_has(const Engine *e, int t) { return e->trk[t].len > 1 && e->trk[t].rec_state != ST_REC; }
+
+/* another track already keeps the bar */
+static int other_synced(const Engine *e, const Track *self)
+{
+    for (int i = 0; i < CD_TRACKS; i++) {
+        const Track *t = &e->trk[i];
+        if (t == self) continue;
+        if (t->len > 0 && t->rec_state != ST_REC && lock_mode(t)) return 1;
+        if (t->rec_state == ST_REC && (t->rec_sync || t->rec_first)) return 1;
+    }
+    return 0;
+}
+
+/* take lengths in bars: 1/4, 1/2, 1, 2, 3, ... */
+static double snap_up(double x) { return x <= 0.25 ? 0.25 : x <= 0.5 ? 0.5 : ceil(x - 1e-9); }
+static double snap_down(double x) { return x >= 1 ? floor(x + 1e-9) : x >= 0.5 ? 0.5 : x >= 0.25 ? 0.25 : 0; }
+static double snap_near(double x) { return x < 0.375 ? 0.25 : x < 0.75 ? 0.5 : floor(x + 0.5); }
 
 void eng_push_input(Engine *e, const float *in, int frames)
 {
@@ -195,66 +244,135 @@ void eng_push_input(Engine *e, const float *in, int frames)
     __atomic_store_n(&e->ring_w, w, __ATOMIC_RELEASE);
 }
 
-static void do_clear(Engine *e)
+void eng_midi_clock(Engine *e, uint8_t msg, double t)
 {
-    e->playing = 0; e->overdub = 0; e->rec_state = ST_IDLE;
-    e->len = 0; e->rec_pos = 0; e->pos = 0;
-    e->play_g = 0; e->clear_pending = 0; e->decay_armed = 0;
-    e->version++;
+    uint32_t w = __atomic_load_n(&e->ev_w, __ATOMIC_RELAXED);
+    uint32_t r = __atomic_load_n(&e->ev_r, __ATOMIC_ACQUIRE);
+    if (w - r >= CD_EVQ) return;
+    e->evq[w & (CD_EVQ - 1)].msg = msg;
+    e->evq[w & (CD_EVQ - 1)].t = t;
+    __atomic_store_n(&e->ev_w, w + 1, __ATOMIC_RELEASE);
 }
 
-static void start_rec(Engine *e)
+static void do_clear(Track *t)
 {
-    e->playing = 0; e->overdub = 0; e->clear_pending = 0; e->undo_stale = 1;
-    e->rec_pos = 0; e->len = 0; e->rec_state = ST_REC; e->play_g = 0; e->decay_armed = 0;
-    e->version++;
+    t->playing = 0; t->overdub = 0; t->rec_state = ST_IDLE;
+    t->len = 0; t->rec_pos = 0; t->pos = 0;
+    t->play_g = 0; t->clear_pending = 0; t->decay_armed = 0; t->xleft = 0;
+    t->version++;
 }
 
-static void finish_rec(Engine *e)
+static void start_rec(Engine *e, Track *t, double phase0, int sync, int first)
 {
-    e->rec_state = ST_IDLE;
-    e->len = e->rec_pos >= MIN_TAKE ? e->rec_pos : 0;
-    e->p[P_LOOP_START] = 0.f; e->p[P_LOOP_END] = 1.f;
-    int ls, le; eng_loop_range(e, &ls, &le);
-    e->pos = e->p[P_REVERSE] > 0.5f && e->len ? le - 1 : 0;
-    e->playing = e->len > 0 && e->p[P_AUTOPLAY] > 0.5f;
-    e->version++;
+    t->playing = 0; t->overdub = 0; t->clear_pending = 0; t->undo_stale = 1;
+    t->rec_pos = 0; t->len = 0; t->rec_state = ST_REC; t->play_g = 0; t->decay_armed = 0;
+    t->rec_sync = sync; t->rec_first = first; t->stop_cyc = 0; t->stop_len = 0;
+    t->phase0 = phase0; t->synced = 0; t->xleft = 0;
+    if (first) { e->tr.cyc = 0; e->tr.running = 0; e->tr.rate = 0; }
+    t->version++;
 }
 
-static void handle_cmds(Engine *e)
+static void finish_rec(Engine *e, Track *t)
 {
-    int c = __atomic_exchange_n(&e->cmd, 0, __ATOMIC_ACQ_REL);
+    int len = t->rec_pos;
+    t->rec_state = ST_IDLE;
+    if (t->rec_sync) {
+        if (t->stop_len <= 0) {
+            /* ended before the bar it was going to (the buffer filled, the
+             * clock stopped): keep what fits a whole length */
+            double ec = e->tr.phase - t->phase0, c = snap_down(ec);
+            if (c <= 0 || ec <= 0) len = 0;
+            else { t->stop_cyc = c; t->stop_len = (int)(len * c / ec); }
+        }
+        if (len) {
+            if (t->stop_len + CD_XFADE < len) len = t->stop_len + CD_XFADE;
+            int xf = CD_XFADE < len / 4 ? CD_XFADE : len / 4;
+            t->cycles = t->stop_cyc;
+            t->cyc_rec = (double)(len - xf) / t->stop_cyc;
+            t->synced = len >= MIN_TAKE;
+            if (!t->synced) len = 0;
+        }
+    } else {
+        len = len >= MIN_TAKE ? len : 0;
+        t->synced = 0;
+        if (t->rec_first && len) {
+            /* the first synced take is one bar long and starts the transport */
+            int xf = CD_XFADE < len / 4 ? CD_XFADE : len / 4;
+            double play = len - xf;
+            e->tr.cyc = play; e->tr.phase = 0; e->tr.rate = 1.0 / play; e->tr.running = 1;
+            t->phase0 = 0; t->cyc_rec = play; t->cycles = 1; t->synced = 1;
+        }
+    }
+    t->rec_sync = t->rec_first = 0;
+    t->len = len;
+    t->p[P_LOOP_START] = 0.f; t->p[P_LOOP_END] = 1.f;
+    int ls, le, xf; loop_region(len, t->p, &ls, &le, &xf);
+    t->pos = t->p[P_REVERSE] > 0.5f && len ? le - xf - 1 : 0;
+    t->snap = 1;
+    t->playing = len > 0 && e->p[P_AUTOPLAY] > 0.5f;
+    t->version++;
+}
+
+/* stop a synced take on the bar: the shortest whole length that holds what
+ * was played (pressed up to a 1/16 bar late still ends on the bar just gone) */
+static void quantized_stop(Engine *e, Track *t)
+{
+    double ec = e->tr.phase - t->phase0;
+    double c = snap_up(ec - 1.0 / 16);
+    t->stop_cyc = c;
+    if (ec >= c && ec > 0) {
+        t->stop_len = (int)lround(t->rec_pos * c / ec);
+        if (t->stop_len < 1) t->stop_len = 1;
+        if (t->rec_pos >= t->stop_len + CD_XFADE) finish_rec(e, t);
+    }
+}
+
+static void arm(Track *t, int sync) { t->rec_state = ST_ARMED; t->arm_sync = sync; t->playing = 0; t->overdub = 0; }
+
+static void handle_cmds(Engine *e, Track *t)
+{
+    int c = __atomic_exchange_n(&t->cmd, 0, __ATOMIC_ACQ_REL);
     if (!c) return;
     if (c & CMD_CLEAR) {
         /* fade out first when something is playing; render() clears at the end of the fade */
-        if (e->rec_state == ST_REC || e->play_g <= 0.f) do_clear(e);
-        else { e->playing = 0; e->overdub = 0; e->rec_state = ST_IDLE; e->clear_pending = 1; }
+        if (t->rec_state == ST_REC || t->play_g <= 0.f) do_clear(t);
+        else { t->playing = 0; t->overdub = 0; t->rec_state = ST_IDLE; t->clear_pending = 1; }
         return;
     }
     if (c & CMD_REC) {
-        if (e->rec_state == ST_REC) finish_rec(e);
-        else if (e->rec_state == ST_ARMED) e->rec_state = ST_IDLE;
+        if (t->rec_state == ST_REC) {
+            if (!t->rec_sync) finish_rec(e, t);
+            else if (t->stop_cyc <= 0) quantized_stop(e, t);
+        } else if (t->rec_state == ST_ARMED) t->rec_state = ST_IDLE;
         else if (!e->busy) {
-            if (e->p[P_TRIGGER] > 0.5f) { e->rec_state = ST_ARMED; e->playing = 0; e->overdub = 0; }
-            else start_rec(e);
+            int want_sync = t->p[P_SYNC] < 0.5f, midi = e->p[P_CLOCK] > 0.5f;
+            int first = want_sync && !midi && !other_synced(e, t);
+            if (want_sync && !first) {
+                if (!e->tr.running || e->p[P_REC_WAIT] > 0.5f) arm(t, 1);
+                else start_rec(e, t, e->tr.phase, 1, 0);
+            } else if (e->p[P_TRIGGER] > 0.5f) arm(t, 0);
+            else start_rec(e, t, e->tr.phase, 0, first);
         }
     }
-    if (e->clear_pending) return;
-    if ((c & CMD_PLAY) && e->rec_state != ST_REC && e->len > 0) {
-        e->playing = !e->playing;
-        if (!e->playing) e->overdub = 0;
-        else if (e->play_g <= 0.f) { int ls, le; eng_loop_range(e, &ls, &le); e->pos = e->p[P_REVERSE] > 0.5f ? le - 1 : ls; }
+    if (t->clear_pending) return;
+    if ((c & CMD_PLAY) && t->rec_state != ST_REC && t->len > 0) {
+        t->playing = !t->playing;
+        if (!t->playing) t->overdub = 0;
+        else if (t->play_g <= 0.f) {
+            int ls, le, xf; loop_region(t->len, t->p, &ls, &le, &xf);
+            t->pos = t->p[P_REVERSE] > 0.5f ? le - xf - 1 : ls; t->snap = 1;
+        }
     }
-    if ((c & CMD_ODUB) && e->rec_state != ST_REC && e->len > 0 && !e->busy) {
-        if (e->overdub) e->overdub = 0;
+    if ((c & CMD_ODUB) && t->rec_state != ST_REC && t->len > 0 && !e->busy) {
+        if (t->overdub) t->overdub = 0;
         else {
-            e->overdub = 1; e->last_od = -1;
-            if (!e->playing) {
-                if (e->play_g <= 0.f) {
-                    int ls, le; eng_loop_range(e, &ls, &le);
-                    e->pos = e->p[P_REVERSE] > 0.5f ? le - 1 : ls;
+            t->overdub = 1; t->last_od = -1;
+            if (!t->playing) {
+                if (t->play_g <= 0.f) {
+                    int ls, le, xf; loop_region(t->len, t->p, &ls, &le, &xf);
+                    t->pos = t->p[P_REVERSE] > 0.5f ? le - xf - 1 : ls; t->snap = 1;
                 }
-                e->playing = 1;
+                t->playing = 1;
             }
         }
     }
@@ -271,18 +389,18 @@ static inline float sat(float x)
     return x < 0 ? -y : y;
 }
 
-static inline void od_write(Engine *e, int idx, float il, float ir, float keep)
+static inline void od_write(float *buf, int idx, float il, float ir, float keep)
 {
-    e->buf[2 * idx] = sat(e->buf[2 * idx] * keep + il);
-    e->buf[2 * idx + 1] = sat(e->buf[2 * idx + 1] * keep + ir);
+    buf[2 * idx] = sat(buf[2 * idx] * keep + il);
+    buf[2 * idx + 1] = sat(buf[2 * idx + 1] * keep + ir);
 }
 
 /* overdub one loop frame; the crossfaded head also writes its tail partner,
  * so what plays there is keep * old + input exactly */
-static inline void od_write_loop(Engine *e, int idx, int ls, int le, int xf, float il, float ir, float keep)
+static inline void od_write_loop(float *buf, int idx, int ls, int le, int xf, float il, float ir, float keep)
 {
-    od_write(e, idx, il, ir, keep);
-    if (idx - ls < xf) od_write(e, le - xf + (idx - ls), il, ir, keep);
+    od_write(buf, idx, il, ir, keep);
+    if (idx - ls < xf) od_write(buf, le - xf + (idx - ls), il, ir, keep);
 }
 
 /* the loop's sample at q in [ls, le - xf), with the seam crossfade */
@@ -297,24 +415,90 @@ static inline void loop_val(const float *buf, int ls, int le, int xf, int q, flo
     } else { *l = buf[2 * q]; *r = buf[2 * q + 1]; }
 }
 
-/* read the loop with linear interpolation; advance the playhead */
-static inline void loop_read(const float *buf, double *pos, int ls, int le, int xf, double step,
-                             float *l, float *r)
+static inline double wrap(double p, int ls, int L)
 {
-    int end = le - xf, L = end - ls;
-    double p = *pos;
-    if (p < ls || p >= end) p = step < 0 ? end - 1 : ls;
+    if (p >= ls && p < ls + L) return p;
+    p = fmod(p - ls, (double)L); if (p < 0) p += L;
+    if (p >= L) p = 0;
+    return ls + p;
+}
+
+/* the loop at position p (inside [ls, le - xf)), linearly interpolated */
+static inline void loop_at(const float *buf, int ls, int le, int xf, double p, float *l, float *r)
+{
+    int end = le - xf;
     int i0 = (int)p; float fr = (float)(p - i0);
+    if (i0 >= end) i0 = end - 1;
     int i1 = i0 + 1 >= end ? ls : i0 + 1;
     float l0, r0, l1, r1;
     loop_val(buf, ls, le, xf, i0, &l0, &r0);
     loop_val(buf, ls, le, xf, i1, &l1, &r1);
     *l = l0 * (1 - fr) + l1 * fr;
     *r = r0 * (1 - fr) + r1 * fr;
-    p += step;
-    if (p >= end) p -= L;
-    if (p < ls) p += L;
-    *pos = p;
+}
+
+/* per block, per track */
+typedef struct {
+    int ls, le, xf, end, L;
+    double speed;              /* buffer frames per output frame (signed) */
+    int rev, lock, gate;
+    float keep; int decay_always;
+    float gl, gr;              /* output gain targets */
+} TC;
+
+static void prep(const Engine *e, const Track *t, TC *c)
+{
+    const float *tp = t->p;
+    memset(c, 0, sizeof *c);
+    if (t->len > 1) {
+        loop_region(t->len, tp, &c->ls, &c->le, &c->xf);
+        c->end = c->le - c->xf; c->L = c->end - c->ls;
+    }
+    double user = eng_rate(tp, t->bend);
+    c->rev = tp[P_REVERSE] > 0.5f;
+    int sy = lock_mode(t);
+    c->gate = !sy || e->tr.running;
+    c->lock = sy && e->tr.running && fabs(user - 1.0) < 1e-9;
+    double sp = sy ? (e->tr.running ? user * t->cyc_rec * e->tr.rate : 0) : user;
+    c->speed = c->rev ? -sp : sp;
+    /* loop decay: each pass of the write head scales the loop by keep, so
+     * layers fade away over time and stacked overdubs can't keep growing */
+    c->keep = 1.f - clampf(tp[P_DECAY], 0.f, 1.f);
+    c->decay_always = tp[P_DECAY_MODE] > 0.5f && c->keep < 1.f && t->decay_armed;
+    /* pan: a stereo balance with equal power, unity in the middle */
+    float vol = tp[P_MUTE] > 0.5f ? 0.f : tp[P_VOLUME];
+    double a = (clampf(tp[P_PAN], -1.f, 1.f) + 1.0) * M_PI / 4;
+    c->gl = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
+    c->gr = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
+}
+
+/* where a locked track plays: the take keeps its place in the bar */
+static double lock_target(const Engine *e, const Track *t, const TC *c)
+{
+    double el = (e->tr.phase - t->phase0) * t->cyc_rec;
+    double d = fmod(el - c->ls, (double)c->L);
+    if (d < 0) d += c->L;
+    if (d >= c->L) d = 0;
+    return c->rev ? c->end - 1 - d : c->ls + d;
+}
+
+/* a jump: the old playhead keeps going where it was (next at from) and
+ * fades out under the new one */
+static void start_jump(Track *t, double from)
+{
+    if (t->play_g <= 0.f) return;
+    t->xpos = from;
+    t->xleft = CD_FADE;
+}
+
+/* the take at any position (the fading playhead may be outside the window) */
+static inline void raw_at(const float *buf, int len, double p, float *l, float *r)
+{
+    if (p < 0) p = 0;
+    if (p > len - 1.001) p = len - 1.001;
+    int i0 = (int)p; float fr = (float)(p - i0);
+    *l = buf[2 * i0] * (1 - fr) + buf[2 * i0 + 2] * fr;
+    *r = buf[2 * i0 + 1] * (1 - fr) + buf[2 * i0 + 3] * fr;
 }
 
 /* Count the capture frames that arrive against the output frames played.
@@ -352,21 +536,79 @@ static void measure_input_clock(Engine *e, uint32_t w)
     e->rm_wl = w; e->rm_ol = now;
 }
 
+/* follow the MIDI clock (or the first loop): the transport's phase and rate */
+static void transport_update(Engine *e, const float *p)
+{
+    Transport *tr = &e->tr;
+    double now = e->now ? e->now() : eng_clock();
+    const int N = CD_PPQ * 4;
+    uint32_t w = __atomic_load_n(&e->ev_w, __ATOMIC_ACQUIRE), r = e->ev_r;
+    while (r != w) {
+        ClockEv ev = e->evq[r & (CD_EVQ - 1)]; r++;
+        switch (ev.msg) {
+        case 0xFA: tr->ticks = -1; tr->tick_t = ev.t; tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
+        case 0xFB: tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
+        case 0xFC: tr->ext_run = 0; tr->seen_transport = 1; break;
+        case 0xF8: {
+            double last = tr->hist[(tr->hist_w + N - 1) % N];
+            if (tr->hist_n && ev.t - last > 1.0) tr->hist_n = 0;   /* a gap: measure afresh */
+            tr->hist[tr->hist_w] = ev.t; tr->hist_w = (tr->hist_w + 1) % N;
+            if (tr->hist_n < N) tr->hist_n++;
+            if (!tr->seen_transport) tr->ext_run = 1;   /* clock without Start: it's already playing */
+            if (tr->ext_run) { tr->ticks++; tr->tick_t = ev.t; }
+            break;
+        }
+        }
+    }
+    __atomic_store_n(&e->ev_r, r, __ATOMIC_RELEASE);
+
+    double iv = 0;
+    if (tr->hist_n >= 3) {   /* a first guess from two ticks, better with every tick (up to a bar) */
+        double newest = tr->hist[(tr->hist_w + N - 1) % N];
+        double oldest = tr->hist[(tr->hist_w + N - tr->hist_n) % N];
+        iv = (newest - oldest) / (tr->hist_n - 1);
+        if (now - newest > 0.5 || iv <= 1e-4) iv = 0;   /* the clock stopped coming */
+    }
+    tr->bpm = iv > 0 ? 60.0 / (iv * CD_PPQ) : 0;
+
+    if (p[P_CLOCK] < 0.5f) {
+        tr->running = tr->cyc > 0;
+        tr->rate = tr->cyc > 0 ? 1.0 / tr->cyc : 0;
+        tr->locked = 0;
+        return;
+    }
+    int beats = (int)p[P_BEATS]; if (beats < 1) beats = 1;
+    double tpb = (double)CD_PPQ * beats;
+    if (iv <= 0 || !tr->ext_run || tr->ticks < 0) { tr->running = 0; tr->rate = 0; tr->locked = 0; return; }
+    tr->cyc = iv * CD_SR * tpb;
+    /* where the clock is when this block is heard */
+    double T = now + e->lat_frames / (double)CD_SR + p[P_CLOCK_OFS] * 0.001;
+    double dt = clampd((T - tr->tick_t) / iv, -2.0, 2.0);
+    double target = (tr->ticks + dt) / tpb;
+    if (!tr->locked || fabs(target - tr->phase) * tr->cyc > 0.03 * CD_SR) {
+        tr->phase = target; tr->err_avg = 0; tr->locked = 1;
+        double f = target - floor(target);
+        if (f * tr->cyc < 0.25 * CD_SR) tr->bar_edge = 1;   /* (re)started on or just after the bar */
+    } else {
+        double err = (target - tr->phase) * tr->cyc;
+        tr->err_avg += (err - tr->err_avg) * 0.1;
+    }
+    /* follow it a hair faster or slower (at most 0.5%) rather than jumping */
+    tr->rate = (1.0 + clampd(tr->err_avg * 2e-5, -0.005, 0.005)) / tr->cyc;
+    tr->running = 1;
+}
+
 void eng_render(Engine *e, float *out, int frames)
 {
     float p[P_COUNT];
-    handle_cmds(e);
+    for (int k = 0; k < CD_TRACKS; k++) handle_cmds(e, &e->trk[k]);
     memcpy(p, e->p, sizeof p);
+    transport_update(e, p);
     float gain = db2lin(p[P_IN_GAIN]);
     float thr = db2lin(p[P_THRESH]);
-    /* loop decay: each pass of the write head scales the loop by keep, so
-     * layers fade away over time and stacked overdubs can't keep growing */
-    float keep = 1.f - clampf(p[P_DECAY], 0.f, 1.f), vol = p[P_VOLUME];
-    int decay_always = p[P_DECAY_MODE] > 0.5f && keep < 1.f && e->decay_armed;
-    double rate = eng_rate(p);
-    int rev = p[P_REVERSE] > 0.5f;
     float inmax = 0, outmax = 0;
     const float fade = 1.f / CD_FADE;
+    Transport *tr = &e->tr;
 
     /* Input FIFO. The capture and output devices run on their own clocks, so
      * the FIFO is kept at a target fill by reading it a hair faster or slower
@@ -389,14 +631,12 @@ void eng_render(Engine *e, float *out, int frames)
     e->fill_avg += ((float)fill - e->fill_avg) * 0.02f;
     double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
-    float dry[BLK * 2], inb[BLK * 2];
+    float mix[BLK * 2], inb[BLK * 2];
+    TC tc[CD_TRACKS];
     int done = 0;
     while (done < frames) {
         int n = frames - done > BLK ? BLK : frames - done;
-        int len = e->len, ls = 0, le = 0, xf = 0;
-        if (len > 1) loop_region(len, p, &ls, &le, &xf);
-        int end = le - xf, L = end - ls;
-        double period = L > 0 ? L / rate : 0;
+        for (int k = 0; k < CD_TRACKS; k++) prep(e, &e->trk[k], &tc[k]);
         for (int i = 0; i < n; i++) {
             float il = 0, ir = 0;
             if (!e->priming) {
@@ -418,74 +658,135 @@ void eng_render(Engine *e, float *out, int frames)
             if (m > inmax) inmax = m;
             inb[2 * i] = il; inb[2 * i + 1] = ir;
 
-            if (e->rec_state == ST_ARMED && m >= thr) start_rec(e);
-            if (e->rec_state == ST_REC && !e->busy) {
-                e->buf[2 * e->rec_pos] = il; e->buf[2 * e->rec_pos + 1] = ir;
-                e->rec_pos++; e->len = e->rec_pos;
-                if (e->rec_pos >= e->cap) finish_rec(e);
-            }
+            float ml = 0, mr = 0;
+            for (int k = 0; k < CD_TRACKS; k++) {
+                Track *t = &e->trk[k];
+                TC *c = &tc[k];
 
-            /* play / stop fade */
-            if (e->playing && e->rec_state != ST_REC) { if ((e->play_g += fade) > 1.f) e->play_g = 1.f; }
-            else if ((e->play_g -= fade) < 0.f) e->play_g = 0.f;
-            if (e->clear_pending && e->play_g <= 0.f) { do_clear(e); len = 0; L = 0; }
+                if (t->rec_state == ST_ARMED) {
+                    if (t->arm_sync) {
+                        if (tr->running && tr->bar_edge) {
+                            start_rec(e, t, floor(tr->phase + 1e-9), 1, 0);
+                            /* the clock started a little before we could follow it:
+                             * keep the take on the bar, with silence for what was missed */
+                            int late = (int)((tr->phase - t->phase0) * tr->cyc);
+                            if (late > 0 && late < t->cap / 2) {
+                                memset(t->buf, 0, sizeof(float) * 2 * (size_t)late);
+                                t->rec_pos = t->len = late;
+                            }
+                            prep(e, t, c);
+                        }
+                    } else if (m >= thr) {
+                        int first = t->p[P_SYNC] < 0.5f && p[P_CLOCK] < 0.5f && !other_synced(e, t);
+                        start_rec(e, t, tr->phase, 0, first); prep(e, t, c);
+                    }
+                }
+                if (t->rec_state == ST_REC) {
+                    if (t->rec_sync && !tr->running) { finish_rec(e, t); prep(e, t, c); }
+                    else {
+                        if (t->rec_sync && t->stop_cyc > 0 && !t->stop_len && tr->phase - t->phase0 >= t->stop_cyc)
+                            t->stop_len = t->rec_pos > 0 ? t->rec_pos : 1;
+                        if (!e->busy) {
+                            t->buf[2 * t->rec_pos] = il; t->buf[2 * t->rec_pos + 1] = ir;
+                            t->rec_pos++; t->len = t->rec_pos;
+                        }
+                        if ((t->stop_len && t->rec_pos >= t->stop_len + CD_XFADE) || t->rec_pos >= t->cap) {
+                            finish_rec(e, t); prep(e, t, c);
+                        }
+                    }
+                }
 
-            float dl = 0, dr = 0;
-            if (e->play_g > 0.f && len > 1 && L > 0 && e->rec_state != ST_REC) {
-                int writing = (e->overdub || decay_always) && !e->busy;
-                if (writing && !e->writing) {
+                /* play / stop fade */
+                if (t->playing && t->rec_state != ST_REC && c->gate) { if ((t->play_g += fade) > 1.f) t->play_g = 1.f; }
+                else if ((t->play_g -= fade) < 0.f) t->play_g = 0.f;
+                if (t->clear_pending && t->play_g <= 0.f) { do_clear(t); prep(e, t, c); }
+                t->gl += (c->gl - t->gl) * 0.004f;
+                t->gr += (c->gr - t->gr) * 0.004f;
+
+                if (t->play_g <= 0.f || c->L <= 0 || t->rec_state == ST_REC) { t->writing = 0; continue; }
+                int ls = c->ls, le = c->le, xf = c->xf, end = c->end, L = c->L;
+
+                /* where it plays this frame */
+                if (c->lock) {
+                    double tg = lock_target(e, t, c);
+                    double d = tg - wrap(t->pos + c->speed, ls, L);
+                    if (d > L / 2.0) d -= L; else if (d < -L / 2.0) d += L;
+                    if (!t->snap && fabs(d) > JUMP_TOL) start_jump(t, t->pos + c->speed);
+                    t->pos = tg;
+                } else if (t->pos < ls || t->pos >= end) {
+                    if (!t->snap) start_jump(t, t->pos);
+                    t->pos = wrap(t->pos, ls, L);
+                }
+                t->snap = 0;
+
+                int writing = (t->overdub || c->decay_always) && !e->busy;
+                if (writing && !t->writing) {
                     /* overdub lands where the player heard the loop: behind
                      * the playhead by the output + input latency (the
                      * devices' and the FIFO's), plus the user's trim (Dub
                      * align). Fixed for the whole pass: following the FIFO's
                      * fill as it wobbles would move the write head against
                      * the playhead and bend the pitch of what is written. */
-                    double c = (double)e->lat_frames + (double)target / e->in_ratio
-                               + p[P_DUB_ALIGN] * 0.001 * CD_SR;
-                    e->od_comp = c < 0 ? 0 : c;
-                    e->last_od = -1;
+                    double cm = (double)e->lat_frames + (double)target / e->in_ratio
+                                + p[P_DUB_ALIGN] * 0.001 * CD_SR;
+                    t->od_comp = cm < 0 ? 0 : cm;
+                    t->last_od = -1;
                 }
-                e->writing = writing;
+                t->writing = writing;
                 if (writing) {
-                    float wl = e->overdub ? il : 0.f, wr = e->overdub ? ir : 0.f;
-                    double pp = e->pos;
-                    if (pp < ls || pp >= end) pp = rev ? end - 1 : ls;
-                    pp += (rev ? e->od_comp : -e->od_comp) * rate;
-                    pp = fmod(pp - ls, (double)L); if (pp < 0) pp += L;
-                    int idx = ls + (int)pp; if (idx >= end) idx = end - 1;
-                    if (e->last_od < ls || e->last_od >= end) {
-                        od_write_loop(e, idx, ls, le, xf, wl, wr, keep);
+                    float wl = t->overdub ? il : 0.f, wr = t->overdub ? ir : 0.f;
+                    double pp = wrap(t->pos - t->od_comp * c->speed, ls, L);
+                    int idx = (int)pp; if (idx >= end) idx = end - 1;
+                    int rev = c->speed < 0;
+                    if (t->last_od < ls || t->last_od >= end) {
+                        od_write_loop(t->buf, idx, ls, le, xf, wl, wr, c->keep);
                     } else {
                         /* write every index the write head crossed since the
                          * last frame (fills gaps when rate > 1, skips
                          * repeats when rate < 1) */
-                        int cur = e->last_od, guard = 0;
+                        int cur = t->last_od, guard = 0;
                         while (cur != idx && guard++ < 64) {
                             cur += rev ? -1 : 1;
                             if (cur >= end) cur = ls;
                             if (cur < ls) cur = end - 1;
-                            od_write_loop(e, cur, ls, le, xf, wl, wr, keep);
+                            od_write_loop(t->buf, cur, ls, le, xf, wl, wr, c->keep);
                         }
                     }
-                    e->last_od = idx;
+                    t->last_od = idx;
                 }
-                double pos = e->pos;
-                loop_read(e->buf, &pos, ls, le, xf, rev ? -rate : rate, &dl, &dr);
-                e->pos = pos;
-                dl *= e->play_g; dr *= e->play_g;
+
+                float dl, dr;
+                loop_at(t->buf, ls, le, xf, t->pos, &dl, &dr);
+                if (t->xleft > 0) {
+                    /* a jump: the old playhead fades out under the new one */
+                    float ol, orr, wo = (float)t->xleft / CD_FADE;
+                    raw_at(t->buf, t->len, t->xpos, &ol, &orr);
+                    dl = dl * (1 - wo) + ol * wo; dr = dr * (1 - wo) + orr * wo;
+                    t->xpos += c->speed; t->xleft--;
+                }
+                if (!c->lock) t->pos = wrap(t->pos + c->speed, ls, L);
+                ml += dl * t->play_g * t->gl;
+                mr += dr * t->play_g * t->gr;
             }
-            dry[2 * i] = dl; dry[2 * i + 1] = dr;
+            mix[2 * i] = ml; mix[2 * i + 1] = mr;
+
+            if (tr->running) {
+                double ph0 = tr->phase;
+                tr->phase += tr->rate;
+                tr->bar_edge = floor(tr->phase) > floor(ph0);
+            } else tr->bar_edge = 0;
         }
-        fx_block(&e->fx, p, period, dry, n);
+        fx_block(&e->fx, p, tr->cyc, mix, n);
         /* the input is heard through Conduit only as far as Input monitor
          * says, overdubbing or not: an interface that monitors its own input
          * would otherwise be heard twice, the second copy late */
         float mon_t = p[P_MONITOR];
+        float master = p[P_MASTER];
         for (int i = 0; i < n; i++) {
             e->mon_g += (mon_t - e->mon_g) * fade;
             for (int c = 0; c < 2; c++) {
-                float o = dry[2 * i + c] * vol + inb[2 * i + c] * e->mon_g;
-                o = sat(o);   /* loop + monitored input round off instead of clipping */
+                float o = mix[2 * i + c] * master + inb[2 * i + c] * e->mon_g;
+                o = sat(o);   /* loops + monitored input round off instead of clipping */
                 float a = fabsf(o); if (a > outmax) outmax = a;
                 out[2 * (done + i) + c] = o;
             }
@@ -494,8 +795,11 @@ void eng_render(Engine *e, float *out, int frames)
     }
     __atomic_store_n(&e->ring_r, r, __ATOMIC_RELEASE);
     e->out_total += (uint64_t)frames;
-    e->pos_i = (int)e->pos;
-    if (e->writing || e->rec_state == ST_REC) e->version++;
+    for (int k = 0; k < CD_TRACKS; k++) {
+        Track *t = &e->trk[k];
+        t->pos_i = (int)t->pos;
+        if (t->writing || t->rec_state == ST_REC) t->version++;
+    }
     float dec = powf(0.9995f, (float)frames);
     e->in_peak = inmax > e->in_peak * dec ? inmax : e->in_peak * dec;
     e->out_peak = outmax > e->out_peak * dec ? outmax : e->out_peak * dec;
@@ -503,149 +807,233 @@ void eng_render(Engine *e, float *out, int frames)
 
 /* ---------------------------------------------------------- UI side */
 
-void eng_rec_button(Engine *e) { __atomic_fetch_or(&e->cmd, CMD_REC, __ATOMIC_ACQ_REL); }
-void eng_play_toggle(Engine *e) { __atomic_fetch_or(&e->cmd, CMD_PLAY, __ATOMIC_ACQ_REL); }
+void eng_rec_button(Engine *e, int t) { __atomic_fetch_or(&e->trk[t].cmd, CMD_REC, __ATOMIC_ACQ_REL); }
+void eng_play_toggle(Engine *e, int t) { __atomic_fetch_or(&e->trk[t].cmd, CMD_PLAY, __ATOMIC_ACQ_REL); }
+
 /* ---- undo stack (UI thread) */
 
-static void undo_drop_oldest(Engine *e)
+static void undo_drop_oldest(Track *t)
 {
-    if (!e->undo_n) return;
-    if (e->undo[0].data) e->undo_bytes -= (size_t)e->undo[0].len * 2 * sizeof(float);
-    free(e->undo[0].data);
-    memmove(&e->undo[0], &e->undo[1], sizeof(UndoLevel) * (size_t)(e->undo_n - 1));
-    e->undo_n--;
+    if (!t->undo_n) return;
+    if (t->undo[0].data) t->undo_bytes -= (size_t)t->undo[0].len * 2 * sizeof(float);
+    free(t->undo[0].data);
+    memmove(&t->undo[0], &t->undo[1], sizeof(UndoLevel) * (size_t)(t->undo_n - 1));
+    t->undo_n--;
 }
 
-static void undo_reset(Engine *e)
+static void undo_reset(Track *t)
 {
-    while (e->undo_n) undo_drop_oldest(e);
-    e->undo_stale = 0;
+    while (t->undo_n) undo_drop_oldest(t);
+    t->undo_stale = 0;
 }
 
 /* a new take since: the old steps no longer apply */
-static void undo_check(Engine *e) { if (e->undo_stale) undo_reset(e); }
+static void undo_check(Track *t) { if (t->undo_stale) undo_reset(t); }
 
-static void undo_push(Engine *e, int kind)
+static void undo_push(Track *t, int kind)
 {
-    undo_check(e);
-    int len = e->len;
+    undo_check(t);
+    int len = t->len;
     if (len <= 0) return;
     size_t bytes = kind == UNDO_DUB ? (size_t)len * 2 * sizeof(float) : 0;
     if (bytes > CD_UNDO_BYTES) return;
-    while (e->undo_n && (e->undo_n == CD_UNDO_LEVELS || e->undo_bytes + bytes > CD_UNDO_BYTES))
-        undo_drop_oldest(e);
-    UndoLevel *u = &e->undo[e->undo_n];
+    while (t->undo_n && (t->undo_n == CD_UNDO_LEVELS || t->undo_bytes + bytes > CD_UNDO_BYTES))
+        undo_drop_oldest(t);
+    UndoLevel *u = &t->undo[t->undo_n];
     memset(u, 0, sizeof *u);
     u->kind = kind; u->len = len;
-    u->loop_start = e->p[P_LOOP_START]; u->loop_end = e->p[P_LOOP_END];
+    u->loop_start = t->p[P_LOOP_START]; u->loop_end = t->p[P_LOOP_END];
     if (bytes) {
         /* the audio thread only reads the buffer until the overdub starts */
         if (!(u->data = malloc(bytes))) return;
-        memcpy(u->data, e->buf, bytes);
-        e->undo_bytes += bytes;
+        memcpy(u->data, t->buf, bytes);
+        t->undo_bytes += bytes;
     }
-    e->undo_n++;
+    t->undo_n++;
 }
 
-void eng_overdub_toggle(Engine *e)
+void eng_overdub_toggle(Engine *e, int ti)
 {
-    if (!e->overdub && e->len > 0 && e->rec_state == ST_IDLE && !e->busy && !e->clear_pending)
-        undo_push(e, UNDO_DUB);
-    __atomic_fetch_or(&e->cmd, CMD_ODUB, __ATOMIC_ACQ_REL);
+    Track *t = &e->trk[ti];
+    if (!t->overdub && t->len > 0 && t->rec_state == ST_IDLE && !e->busy && !t->clear_pending)
+        undo_push(t, UNDO_DUB);
+    __atomic_fetch_or(&t->cmd, CMD_ODUB, __ATOMIC_ACQ_REL);
 }
 
-void eng_erase(Engine *e)
+void eng_erase(Engine *e, int ti)
 {
-    if (e->len > 0 && e->rec_state == ST_IDLE && !e->clear_pending) undo_push(e, UNDO_ERASE);
-    __atomic_fetch_or(&e->cmd, CMD_CLEAR, __ATOMIC_ACQ_REL);
+    Track *t = &e->trk[ti];
+    if (t->len > 0 && t->rec_state == ST_IDLE && !t->clear_pending) undo_push(t, UNDO_ERASE);
+    __atomic_fetch_or(&t->cmd, CMD_CLEAR, __ATOMIC_ACQ_REL);
 }
 
-void eng_clear(Engine *e) { do_clear(e); undo_reset(e); }
+void eng_clear(Engine *e, int ti) { do_clear(&e->trk[ti]); undo_reset(&e->trk[ti]); }
 
-int eng_undo_count(Engine *e) { undo_check(e); return e->undo_n; }
+int eng_undo_count(Engine *e, int ti) { undo_check(&e->trk[ti]); return e->trk[ti].undo_n; }
 
 void eng_ui_tick(Engine *e)
 {
-    int want = e->p[P_DECAY_MODE] > 0.5f && e->p[P_DECAY] > 0.f && e->playing && e->len > 0
-               && e->rec_state == ST_IDLE && !e->clear_pending;
-    if (want && !e->decay_armed) {
-        /* the loop as it was before it starts to fade: SELECT + B gets it back */
-        undo_push(e, UNDO_DUB);
-        e->decay_armed = 1;
-    } else if (!want && !e->overdub) e->decay_armed = 0;
+    for (int k = 0; k < CD_TRACKS; k++) {
+        Track *t = &e->trk[k];
+        int want = t->p[P_DECAY_MODE] > 0.5f && t->p[P_DECAY] > 0.f && t->playing && t->len > 0
+                   && t->rec_state == ST_IDLE && !t->clear_pending;
+        if (want && !t->decay_armed) {
+            /* the loop as it was before it starts to fade: undo gets it back */
+            undo_push(t, UNDO_DUB);
+            t->decay_armed = 1;
+        } else if (!want && !t->overdub) t->decay_armed = 0;
+    }
 }
 
-int eng_undo(Engine *e)
+int eng_undo(Engine *e, int ti)
 {
-    undo_check(e);
-    if (!e->undo_n || e->rec_state == ST_REC) return 0;
-    UndoLevel *u = &e->undo[e->undo_n - 1];
+    Track *t = &e->trk[ti];
+    undo_check(t);
+    if (!t->undo_n || t->rec_state == ST_REC) return 0;
+    UndoLevel *u = &t->undo[t->undo_n - 1];
     int kind = u->kind;
-    e->overdub = 0;
+    t->overdub = 0;
     if (kind == UNDO_DUB) {
-        if (e->len != u->len) { undo_reset(e); return 0; }
-        memcpy(e->buf, u->data, (size_t)u->len * 2 * sizeof(float));
-        e->undo_bytes -= (size_t)u->len * 2 * sizeof(float);
+        if (t->len != u->len) { undo_reset(t); return 0; }
+        memcpy(t->buf, u->data, (size_t)u->len * 2 * sizeof(float));
+        t->undo_bytes -= (size_t)u->len * 2 * sizeof(float);
         free(u->data);
     } else {
         /* the samples are still in the buffer: give the take back, stopped */
-        e->clear_pending = 0; e->playing = 0; e->rec_state = ST_IDLE;
-        e->len = e->rec_pos = u->len;
-        e->p[P_LOOP_START] = u->loop_start; e->p[P_LOOP_END] = u->loop_end;
-        int ls, le; eng_loop_range(e, &ls, &le);
-        e->pos = ls;
+        t->clear_pending = 0; t->playing = 0; t->rec_state = ST_IDLE;
+        t->len = t->rec_pos = u->len;
+        t->p[P_LOOP_START] = u->loop_start; t->p[P_LOOP_END] = u->loop_end;
+        int ls, le; eng_loop_range(e, ti, &ls, &le);
+        t->pos = ls; t->snap = 1;
     }
-    e->undo_n--;
-    e->version++;
+    t->undo_n--;
+    t->version++;
     return kind;
 }
 
-void eng_set_buffer(Engine *e, const float *st, int frames)
+void eng_set_buffer(Engine *e, int ti, const float *st, int frames)
 {
-    if (frames > e->cap) frames = e->cap;
-    e->playing = 0; e->overdub = 0; e->rec_state = ST_IDLE;
-    undo_reset(e);
-    memcpy(e->buf, st, (size_t)frames * 2 * sizeof(float));
-    e->len = frames; e->rec_pos = frames; e->pos = 0; e->play_g = 0; e->clear_pending = 0; e->decay_armed = 0;
-    e->p[P_LOOP_START] = 0.f; e->p[P_LOOP_END] = 1.f;
-    e->version++;
-}
-
-float *eng_bounce(Engine *e, int *out_frames)
-{
-    *out_frames = 0;
-    int len = e->len;
-    if (len < 2) return NULL;
-    float p[P_COUNT];
-    memcpy(p, e->p, sizeof p);
-    int ls, le, xf; loop_region(len, p, &ls, &le, &xf);
-    double rate = eng_rate(p);
-    int rev = p[P_REVERSE] > 0.5f;
-    int end = le - xf;
-    int n = (int)((end - ls) / rate + 0.5);
-    if (n < 1) return NULL;
-    float *res = malloc((size_t)n * 2 * sizeof(float));
-    FxState fx;
-    if (!res || fx_init(&fx)) { free(res); return NULL; }
-    fx_reset(&fx, p);
-    double period = (end - ls) / rate;
-    double pos = rev ? end - 1 : ls;
-    float blk[BLK * 2];
-    /* pass 0 primes the delay line so the kept pass loops seamlessly */
-    for (int pass = 0; pass < 2; pass++) {
-        if (pass == 1) pos = rev ? end - 1 : ls;
-        for (int done = 0; done < n;) {
-            int m = n - done > BLK ? BLK : n - done;
-            for (int i = 0; i < m; i++)
-                loop_read(e->buf, &pos, ls, le, xf, rev ? -rate : rate, &blk[2 * i], &blk[2 * i + 1]);
-            fx_block(&fx, p, period, blk, m);
-            if (pass == 1)
-                for (int i = 0; i < 2 * m; i++)
-                    res[2 * done + i] = clampf(blk[i] * p[P_VOLUME], -1.f, 1.f);
-            done += m;
+    Track *t = &e->trk[ti];
+    if (frames > t->cap) frames = t->cap;
+    t->playing = 0; t->overdub = 0; t->rec_state = ST_IDLE;
+    undo_reset(t);
+    memcpy(t->buf, st, (size_t)frames * 2 * sizeof(float));
+    t->len = frames; t->rec_pos = frames; t->pos = 0; t->play_g = 0; t->clear_pending = 0; t->decay_armed = 0;
+    t->xleft = 0; t->snap = 1;
+    t->p[P_LOOP_START] = 0.f; t->p[P_LOOP_END] = 1.f;
+    t->synced = 0;
+    if (t->p[P_SYNC] < 0.5f && frames > MIN_TAKE) {
+        int ls, le; eng_loop_range(e, ti, &ls, &le);
+        double play = le - ls, cyc = e->tr.cyc;
+        double whole = cyc > 0 ? snap_near(frames / cyc) : 0;
+        if (cyc > 0 && fabs(frames / cyc - whole) < 0.002 * whole && frames + CD_XFADE <= t->cap) {
+            /* whole bars already (a mix or track Conduit saved, from bar 1):
+             * it loops as it is, so its seam partner is its own start */
+            memcpy(t->buf + 2 * (size_t)frames, t->buf, sizeof(float) * 2 * CD_XFADE);
+            t->len = t->rec_pos = frames + CD_XFADE;
+            t->cycles = whole; t->cyc_rec = frames / whole; t->phase0 = 0; t->synced = 1;
+        } else if (e->p[P_CLOCK] < 0.5f && !other_synced(e, t)) {
+            /* the only synced track: it sets the bar */
+            e->tr.cyc = play; e->tr.phase = 0; e->tr.rate = 1.0 / play; e->tr.running = 1;
+            t->phase0 = 0; t->cyc_rec = play; t->cycles = 1; t->synced = 1;
+        } else if (cyc > 0) {
+            /* fit it to the nearest whole length (a slight varispeed) */
+            double c = snap_near(play / cyc);
+            t->cycles = c; t->cyc_rec = play / c; t->phase0 = 0; t->synced = 1;
         }
     }
-    fx_free(&fx);
-    *out_frames = n;
-    return res;
+    t->version++;
 }
+
+/* ------------------------------------------------------------ mixdown */
+
+static long gcdl(long a, long b) { while (b) { long t = a % b; a = b; b = t; } return a; }
+
+int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
+{
+    memset(m, 0, sizeof *m);
+    memcpy(m->p, e->p, sizeof m->p);
+    double cyc = e->tr.cyc;
+    m->cyc = cyc;
+    long q = 0;                /* quarter bars all synced tracks repeat in */
+    double longest = 0;
+    for (int k = 0; k < CD_TRACKS; k++) {
+        Track *t = &e->trk[k];
+        memcpy(m->tp[k], t->p, sizeof m->tp[k]);
+        if (!eng_track_has(e, k)) continue;
+        const float *tp = m->tp[k];
+        loop_region(t->len, tp, &m->ls[k], &m->le[k], &m->xf[k]);
+        int end = m->le[k] - m->xf[k], L = end - m->ls[k];
+        if (L < 1) continue;
+        m->on[k] = 1;
+        double user = eng_rate(tp, 0);
+        int rev = tp[P_REVERSE] > 0.5f;
+        int sy = lock_mode(t) && cyc > 0;
+        double sp = sy ? user * t->cyc_rec / cyc : user;
+        m->speed[k] = rev ? -sp : sp;
+        if (sy) {
+            /* from bar 1, where it would play there */
+            double el = (0 - t->phase0) * t->cyc_rec;
+            double d = fmod(el - m->ls[k], (double)L); if (d < 0) d += L;
+            m->pos[k] = rev ? end - 1 - d : m->ls[k] + d;
+            double bars = L / (t->cyc_rec * user);
+            long qq = lround(bars * 4);
+            if (qq >= 1 && fabs(qq / 4.0 - bars) < 0.01) q = q ? q / gcdl(q, qq) * qq : qq;
+            else if (bars * cyc > longest) longest = bars * cyc;
+            if (q > 4 * 256) q = 4 * 256;
+        } else {
+            m->pos[k] = rev ? end - 1 : m->ls[k];
+            if (L / user > longest) longest = L / user;
+        }
+        float vol = tp[P_VOLUME];
+        double a = (clampf(tp[P_PAN], -1.f, 1.f) + 1.0) * M_PI / 4;
+        m->gl[k] = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
+        m->gr[k] = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
+        m->mute[k] = tp[P_MUTE] > 0.5f;
+    }
+    double frames = q ? q / 4.0 * cyc : longest;
+    if (frames > max_frames) frames = max_frames;
+    if (frames < 1 || fx_init(&m->fx)) { m->frames = 0; return 0; }
+    fx_reset(&m->fx, m->p);
+    m->frames = (int)(frames + 0.5);
+    /* one pass first, thrown away, so the delay's tail wraps round seamlessly */
+    double save[CD_TRACKS]; memcpy(save, m->pos, sizeof save);
+    float blk[BLK * 2];
+    for (int done = 0; done < m->frames; done += BLK) {
+        int n = m->frames - done < BLK ? m->frames - done : BLK;
+        eng_mix_render(e, m, blk, NULL, n);
+    }
+    memcpy(m->pos, save, sizeof save);
+    m->done = 0;
+    return m->frames;
+}
+
+void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n)
+{
+    for (int i = 0; i < 2 * n; i++) mix[i] = 0;
+    for (int k = 0; k < CD_TRACKS; k++) {
+        if (stems && stems[k]) memset(stems[k], 0, sizeof(float) * 2 * n);
+        if (!m->on[k]) continue;
+        const Track *t = &e->trk[k];
+        int ls = m->ls[k], le = m->le[k], xf = m->xf[k], L = le - xf - ls;
+        double pp = m->pos[k];
+        for (int i = 0; i < n; i++) {
+            float l, r;
+            pp = wrap(pp, ls, L);
+            loop_at(t->buf, ls, le, xf, pp, &l, &r);
+            pp += m->speed[k];
+            l *= m->gl[k]; r *= m->gr[k];
+            if (stems && stems[k]) { stems[k][2 * i] = l; stems[k][2 * i + 1] = r; }
+            if (!m->mute[k]) { mix[2 * i] += l; mix[2 * i + 1] += r; }
+        }
+        m->pos[k] = wrap(pp, ls, L);
+    }
+    for (int done = 0; done < n; done += BLK) {
+        int b = n - done < BLK ? n - done : BLK;
+        fx_block(&m->fx, m->p, m->cyc, mix + 2 * done, b);
+    }
+    for (int i = 0; i < 2 * n; i++) mix[i] = clampf(mix[i] * m->p[P_MASTER], -1.f, 1.f);
+    m->done += n;
+}
+
+void eng_mix_end(Mixdown *m) { fx_free(&m->fx); }

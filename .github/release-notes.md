@@ -1,4 +1,4 @@
-Conduit, a USB-audio sampler / looper for the TrimUI Brick, Brick Hammer and Brick Pro (TrimUI OS, MustardOS
+Conduit, a four-track USB-audio looper (MIDI clock sync and MIDI mapping over USB) for the TrimUI Brick, Brick Hammer and Brick Pro (TrimUI OS, MustardOS
 and KNULLI).
 
 **Install on MustardOS**
