@@ -36,12 +36,12 @@ extra libraries.
   reverse, overdub (in time, unlimited layers), adjustable loop decay (while
   overdubbing or always), and click-free seams, jumps, starts and stops.
 - **Master FX:** drive → sample-rate reducer → bit crusher → resonant SVF
-  (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 bar, ping-pong, damped
-  feedback). Each track's **FX send** decides how much of it goes through:
+  (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 bar, ping-pong, tone,
+  low-cut, wow and saturation on the repeats). Each track's **FX send** decides how much of it goes through:
   all (the default), none (dry) or a blend.
-- **Bloom reverb:** a separate send to a long, swelling stereo reverb after
-  the Alesis MidiVerb II's *Bloom* programs (45 and 49), with its own type,
-  time and level.
+- **Bloom reverb:** a separate send to the Alesis MidiVerb II's *Bloom*
+  programs (45 and 49), emulated exactly, or adjustable (time, size,
+  damping, diffusion), with pre-delay, width and tone on both.
 - **Save to SD:** the mix (with FX) and every track as its own file, from
   bar 1 and as long as the tracks take to come round together, so they line
   up in a DAW. 16-bit PCM or 32-bit float WAV, fsync'd so a power-off right
@@ -65,7 +65,7 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | START | Save the mix + every track |
 | D-pad ↑↓ | Select setting |
 | D-pad ←→ | Change value (hold **L2** for fine, **R2** for coarse) |
-| L1 / R1 | Switch tab: TRACK · FX · SYNC · IO · MIDI · FILES |
+| L1 / R1 | Switch tab: TRACK · EFFECTS · SYNC · IO · MIDI · FILES |
 | SELECT + A | Save the selected track's window (raw) |
 | SELECT + Y | Resample: print the mix (with FX) into the selected track; the tracks in it are muted |
 | SELECT + B | Undo on the selected track: the last overdub, then the one before (up to 16), or an erase |
@@ -112,7 +112,7 @@ asymmetric, like tape) instead of clipping hard. Quiet parts just get
 louder.
 
 **TRACK → FX send** sets how much of the track goes through the master FX
-(FX tab): *100%* (the default) is all of it, *Off* keeps it dry, past the
+(EFFECTS tab): *100%* (the default) is all of it, *Off* keeps it dry, past the
 FX, and anything between is a blend of the two. SELECT + ↑ switches it off
 and back on at the amount it had; on the MIDI tab, *FX send on/off* (or
 *Track N FX send on/off*) does the same from a pad, and *Track N FX send*
@@ -123,29 +123,65 @@ tracks are dry.
 the window while it plays jumps with a short crossfade, so scrubbing doesn't
 click; on a synced track the window keeps its place in the bar.
 
+### Effects
+
+The **EFFECTS** tab holds everything after the tracks, in three sections
+(↑↓ steps past the headings):
+
+- **Drive · crush · filter** and **Delay** are the master FX chain that each
+  track's **FX send** feeds. The delay has *Mix*, *Sync* (free ms, or 1/16 …
+  1 bar), *Time*, *Feedback* and *Ping-pong*, and how its repeats sound:
+  *Tone* (from dark at 1 kHz to bright at 16 kHz), *Low-cut* (thinner
+  repeats, up to 2 kHz), *Wow* and *Wow rate* (tape wobble, up to ±4 ms) and
+  *Saturation* (repeats that get grittier as they go round).
+- **Reverb** is fed by each track's **Reverb send**, a send of its own (see
+  below).
+
 ### Reverb
 
 **TRACK → Reverb send** sends the track to the Bloom reverb, on its own:
 it's a second send, separate from the FX send, so a track can go through
 the FX, the reverb, both or neither. It's 0% (off) by default; SELECT + ↓
-switches it on and off. The reverb is set on the FX tab:
+switches it on and off.
 
-- **Reverb:** *Bloom 1* (MidiVerb II program 45, "Bloom 1 8 Sec") or
-  *Bloom 2* (program 49, "Bloom 2 7 Sec": the same with an 85 ms
-  pre-delay). Instead of starting dense, the sound swells over about half a
-  second as it passes through a long chain of diffusers, then rings out.
-- **Reverb time:** 1 to 30 s (8 s, as the unit, by default).
-- **Reverb level:** how loud the reverb comes back into the mix.
+**EFFECTS → Reverb** picks one of four:
 
-Like the unit it takes the sends in mono and returns them in wide stereo,
-and it runs at half the sample rate (24 kHz; the MidiVerb II ran at
-23.4 kHz), which keeps its darker top end. The saved mix includes it; the
-saved tracks are dry.
+- **Bloom 1, exact** (the default): the Alesis MidiVerb II's program 45,
+  "Bloom 1 8 Sec", emulated exactly: the unit's own program, in its 16-bit
+  integer arithmetic, its 16 K words of delay memory and its 23.4 kHz rate,
+  13-bit mono in and stereo out. Instead of starting dense, the sound swells
+  over about half a second through a long chain of diffusers, then rings
+  out.
+- **Bloom 2, exact:** program 49, "Bloom 2 7 Sec": the same with an 85 ms
+  pre-delay.
+- **Bloom 1 / Bloom 2, adjustable:** the same design in floating point at
+  24 kHz, whose insides can be changed (below).
 
-The signal flow and delay times come from thement's analysis of the
-MidiVerb II in [midiverb_emulator](https://github.com/thement/midiverb_emulator).
-Conduit's reverb is its own floating-point implementation and shares no
-code with that project.
+Then:
+
+- **Level:** how loud the reverb comes back into the mix.
+- **Time:** 1 to 30 s (adjustable types; the exact ones decay as the unit
+  does).
+- **Pre-delay:** up to 500 ms before the reverb starts (on top of Bloom 2's
+  own 85 ms).
+- **Size:** 50 to 150% of the unit's room; a bigger one swells more slowly
+  (adjustable types).
+- **Damping:** how quickly the tail darkens (adjustable types; 50% is the
+  unit's).
+- **Diffusion:** lower is grainier and more echoey, higher smoother
+  (adjustable types; 50% is the unit's).
+- **Width:** 0 (mono) to 150% (wider than the unit).
+- **Low-cut / High-cut:** the tone of what goes into the reverb.
+
+The saved mix includes it; the saved tracks are dry. The exact types match
+the emulation sample for sample; what neither models is the unit's analog
+side, so Conduit stands in a 10 kHz low-pass on the way in and out, and
+converts between its 48 kHz and the unit's 23,437.5 Hz.
+
+The MidiVerb II programs come from thement's
+[midiverb_emulator](https://github.com/thement/midiverb_emulator) (GPL-3),
+which decompiled them from the unit's DSP microcode; `src/midiverb2.c` is a
+port of programs 45 and 49 from it.
 
 ### MIDI
 
@@ -291,7 +327,9 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 src/main.c          UI, input (buttons, sticks, MIDI map), devices, save/load, self-test
 src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock), overdub/undo, FX, mixdown
 src/midi.c          USB MIDI in: raw ALSA devices, parser, reader thread
-src/bloom.c         the Bloom reverb (after the MidiVerb II's Bloom programs)
+src/verb.c          the reverb send: tone, pre-delay, the Bloom, width, level
+src/midiverb2.c     MidiVerb II programs 45 and 49, exact (from midiverb_emulator)
+src/bloom.c         the adjustable Bloom (the same design in floating point)
 src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
 Apps/Conduit/       the app folder: launch.sh, config.json, icon, conduit_diag.sh
@@ -303,9 +341,8 @@ tests/              unit tests and the end-to-end script
 ```
 
 Inspired by [GrainBrick](https://github.com/ETRNLIAM/GrainBrick). Conduit
-shares no code with it. The Bloom reverb follows the MidiVerb II analysis in
-[midiverb_emulator](https://github.com/thement/midiverb_emulator) (it shares
-no code with it either).
+shares no code with it. The Bloom reverb's MidiVerb II programs come from
+thement's [midiverb_emulator](https://github.com/thement/midiverb_emulator).
 
 ## License
 

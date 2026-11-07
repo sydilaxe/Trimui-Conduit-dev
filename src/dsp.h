@@ -3,7 +3,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-#include "bloom.h"
+#include "verb.h"
 
 #define CD_SR 48000
 #define CD_TRACKS 4
@@ -23,8 +23,10 @@ typedef enum {
     /* master FX */
     P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS,
     P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG,
+    P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
     /* the reverb (its own send) */
-    P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL,
+    P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF,
+    P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
     /* sync */
@@ -55,6 +57,8 @@ typedef struct {
     int dly_w;
     float dly_time_s;          /* smoothed, in frames */
     float damp[2];
+    float hp[2];               /* the repeats' low-cut */
+    double wow_ph;             /* the delay's tape wobble */
     float cutoff_s;            /* smoothed cutoff 0..1 */
 } FxState;
 
@@ -157,7 +161,7 @@ typedef struct {
     volatile uint32_t underruns, overruns;
     volatile float in_peak, out_peak;
     FxState fx;
-    Bloom verb;
+    Verb verb;
 } Engine;
 
 int  eng_init(Engine *e, int max_seconds);   /* per track */
@@ -165,6 +169,7 @@ void eng_free(Engine *e);
 void eng_default_params(float *p);
 void eng_default_track(float *tp);
 void eng_reset_fx_params(float *p);
+void eng_default_verb(float *p);
 
 /* capture callback side */
 void eng_push_input(Engine *e, const float *in, int frames);
@@ -204,7 +209,7 @@ typedef struct {
     int on[CD_TRACKS], ls[CD_TRACKS], le[CD_TRACKS], xf[CD_TRACKS];
     float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS], vsend[CD_TRACKS], dc[CD_TRACKS][2];
     FxState fx;
-    Bloom verb;
+    Verb verb;
 } Mixdown;
 int  eng_mix_begin(Engine *e, Mixdown *m, int max_frames);  /* frames, 0 if there's nothing */
 void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n);

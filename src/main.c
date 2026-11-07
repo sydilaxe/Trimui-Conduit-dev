@@ -40,7 +40,7 @@
 
 /* ------------------------------------------------------------ params */
 
-enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN, K_DECAY, K_PAN, K_SEND, K_SEC };
+enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN, K_DECAY, K_PAN, K_SEND, K_SEC, K_HZ };
 typedef struct {
     const char *name; float min, max, step, coarse; int kind; const char *const *labels;
 } ParamDesc;
@@ -52,7 +52,8 @@ static const char *const L_TRIG[] = { "Instant", "Threshold" };
 static const char *const L_FMT[] = { "16-bit PCM", "32-bit float" };
 static const char *const L_DECAY[] = { "While overdubbing", "Always (loop fades)" };
 static const char *const L_LEN[] = { "Synced (whole bars)", "Free" };
-static const char *const L_VERB[] = { "Bloom 1  (MidiVerb II #45)", "Bloom 2  (#49: 85 ms pre-delay)" };
+static const char *const L_VERB[] = { "Bloom 1  exact MidiVerb II #45", "Bloom 2  exact MidiVerb II #49",
+                                      "Bloom 1  adjustable", "Bloom 2  adjustable (+85 ms)" };
 static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)" };
 
 static const ParamDesc PD[P_COUNT] = {
@@ -82,9 +83,21 @@ static const ParamDesc PD[P_COUNT] = {
     [P_DLY_FB]     = { "Delay feedback", 0, 0.95f, 0.05f, 0.2f, K_PCT, 0 },
     [P_DLY_MIX]    = { "Delay mix", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_PINGPONG]   = { "Ping-pong", 0, 1, 1, 1, K_ENUM, L_ONOFF },
-    [P_VERB_TYPE]  = { "Reverb", 0, 1, 1, 1, K_ENUM, L_VERB },
+    [P_DLY_TONE]   = { "Delay tone", 0, 1, 0.05f, 0.2f, K_PCT, 0 },
+    [P_DLY_LOWCUT] = { "Delay low-cut", 20, 2000, 10, 100, K_HZ, 0 },
+    [P_DLY_WOW]    = { "Delay wow", 0, 1, 0.05f, 0.2f, K_PCT, 0 },
+    [P_DLY_WOW_RATE] = { "Wow rate", 0.05f, 10, 0.05f, 0.5f, K_HZ, 0 },
+    [P_DLY_DRIVE]  = { "Delay saturation", 0, 1, 0.05f, 0.2f, K_PCT, 0 },
+    [P_VERB_TYPE]  = { "Reverb", 0, 3, 1, 1, K_ENUM, L_VERB },
     [P_VERB_TIME]  = { "Reverb time", 1, 30, 0.5f, 2, K_SEC, 0 },
     [P_VERB_LEVEL] = { "Reverb level", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
+    [P_VERB_PRE]   = { "Pre-delay", 0, 500, 5, 50, K_MS, 0 },
+    [P_VERB_SIZE]  = { "Size", 0.5f, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
+    [P_VERB_DAMP]  = { "Damping", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_VERB_DIFF]  = { "Diffusion", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_VERB_WIDTH] = { "Width", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
+    [P_VERB_LOWCUT] = { "Reverb low-cut", 20, 1000, 10, 100, K_HZ, 0 },
+    [P_VERB_HICUT] = { "Reverb high-cut", 1000, 16000, 250, 2000, K_HZ, 0 },
     [P_IN_GAIN]    = { "Input gain", -12, 24, 1, 6, K_GAIN, 0 },
     [P_TRIGGER]    = { "Rec trigger", 0, 1, 1, 1, K_ENUM, L_TRIG },
     [P_THRESH]     = { "Threshold", -60, -6, 1, 6, K_DB, 0 },
@@ -103,19 +116,28 @@ static const char *const PKEY[P_COUNT] = {
     [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
     [P_BITS] = "bits", [P_DOWNS] = "downsample", [P_DLY_SYNC] = "delay_sync", [P_DLY_TIME] = "delay_time",
-    [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong", [P_VERB_TYPE] = "reverb", [P_VERB_TIME] = "reverb_time", [P_VERB_LEVEL] = "reverb_level",
+    [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong", [P_DLY_TONE] = "delay_tone", [P_DLY_LOWCUT] = "delay_lowcut", [P_DLY_WOW] = "delay_wow",
+    [P_DLY_WOW_RATE] = "delay_wow_rate", [P_DLY_DRIVE] = "delay_saturation",
+    [P_VERB_TYPE] = "reverb", [P_VERB_TIME] = "reverb_time", [P_VERB_LEVEL] = "reverb_level",
+    [P_VERB_PRE] = "reverb_predelay_ms", [P_VERB_SIZE] = "reverb_size", [P_VERB_DAMP] = "reverb_damping",
+    [P_VERB_DIFF] = "reverb_diffusion", [P_VERB_WIDTH] = "reverb_width", [P_VERB_LOWCUT] = "reverb_lowcut",
+    [P_VERB_HICUT] = "reverb_highcut",
     [P_IN_GAIN] = "in_gain", [P_TRIGGER] = "trigger", [P_THRESH] = "threshold", [P_AUTOPLAY] = "autoplay",
     [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
 };
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TEMPO = -5, ROW_MIDI_DEV = -6,
+       ROW_H_TONE = -7, ROW_H_DLY = -8, ROW_H_VERB = -9,   /* section headings */
        ROW_END = -100 };
 enum { PG_TRACK, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
-static const char *const PAGE_NAME[PG_N] = { "TRACK", "FX", "SYNC", "IO", "MIDI", "FILES" };
-static const int PAGE_ROWS[PG_N][16] = {
+static const char *const PAGE_NAME[PG_N] = { "TRACK", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
+static const int PAGE_ROWS[PG_N][40] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
-    { P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG, P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, ROW_END },
+    { ROW_H_TONE, P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
+      ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
+      ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
+      ROW_END },
     { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
     { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
@@ -323,7 +345,8 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 
 static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
                                P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS,
-                               P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL };
+                               P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
+                               P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT };
 static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
@@ -602,6 +625,7 @@ static void resample(int k)
     for (int j = 0; j < CD_TRACKS; j++) if (used[j] && j != k) trk(j)->p[P_MUTE] = 1;
     Track *t = trk(k);
     t->p[P_MUTE] = 0; t->p[P_PITCH] = 0; t->p[P_FINE] = 0; t->p[P_REVERSE] = 0; t->p[P_VOLUME] = 1; t->p[P_PAN] = 0;
+    t->p[P_VERB_SEND] = 0;   /* the reverb is printed in already */
     eng_set_buffer(&G.eng, k, b, n);
     eng_reset_fx_params(G.eng.p);
     fx_reset(&G.eng.fx, G.eng.p);
@@ -854,6 +878,13 @@ static void move_sel(int dir)
     if (n <= 0) return;
     int s = G.sel_row[G.page] + dir;
     s = s < 0 ? n - 1 : s >= n ? 0 : s;
+    /* section headings aren't settings: step past them */
+    if (G.page < PG_MIDI) {
+        int step = dir < 0 ? -1 : 1;
+        for (int g = 0; g < n && PAGE_ROWS[G.page][s] <= ROW_H_TONE && PAGE_ROWS[G.page][s] >= ROW_H_VERB; g++) {
+            s += step; s = s < 0 ? n - 1 : s >= n ? 0 : s;
+        }
+    }
     G.sel_row[G.page] = s;
     if (s < G.scroll[G.page]) G.scroll[G.page] = s;
     if (s >= G.scroll[G.page] + ROWS_VISIBLE) G.scroll[G.page] = s - ROWS_VISIBLE + 1;
@@ -1171,7 +1202,10 @@ static void value_str(int id, char *o, size_t sz)
     switch (d->kind) {
     case K_ENUM: snprintf(o, sz, "%s", d->labels[(int)v]); break;
     case K_PCT:
-        if (id == P_VOLUME && v > 1.001f) snprintf(o, sz, "%.0f%%  (warm soft clip if it would distort)", v * 100);
+        if ((id == P_VERB_SIZE || id == P_VERB_DAMP || id == P_VERB_DIFF) && G.eng.p[P_VERB_TYPE] < 1.5f)
+            snprintf(o, sz, "(fixed on the exact Bloom)");
+        else if (id == P_DLY_TONE) snprintf(o, sz, "%.0f%%  (%.1f kHz)", v * 100, powf(16.f, v));
+        else if (id == P_VOLUME && v > 1.001f) snprintf(o, sz, "%.0f%%  (warm soft clip if it would distort)", v * 100);
         else snprintf(o, sz, "%.0f%%", v * 100);
         break;
     case K_SEND:
@@ -1179,7 +1213,17 @@ static void value_str(int id, char *o, size_t sz)
         else if (v > 0.995f) snprintf(o, sz, "100%%  (all through the FX)");
         else snprintf(o, sz, "%.0f%%  (the rest dry)", v * 100);
         break;
-    case K_SEC: snprintf(o, sz, "%.1f s", v); break;
+    case K_SEC:
+        if (G.eng.p[P_VERB_TYPE] < 1.5f) snprintf(o, sz, "%s (fixed on the exact Bloom)", G.eng.p[P_VERB_TYPE] < 0.5f ? "8 s" : "7 s");
+        else snprintf(o, sz, "%.1f s", v);
+        break;
+    case K_HZ:
+        if ((id == P_DLY_LOWCUT || id == P_VERB_LOWCUT) && v < 20.5f) snprintf(o, sz, "Off");
+        else if (id == P_VERB_HICUT && v > 15999.f) snprintf(o, sz, "Off");
+        else if (v >= 1000.f) snprintf(o, sz, "%.1f kHz", v / 1000.f);
+        else if (v < 10.f) snprintf(o, sz, "%.2f Hz", v);
+        else snprintf(o, sz, "%.0f Hz", v);
+        break;
     case K_PAN:
         if (fabsf(v) < 0.005f) snprintf(o, sz, "Center");
         else snprintf(o, sz, "%s %.0f", v < 0 ? "Left" : "Right", fabsf(v) * 100);
@@ -1195,6 +1239,7 @@ static void value_str(int id, char *o, size_t sz)
     case K_GAIN: snprintf(o, sz, "%+.0f dB", v); break;
     case K_MS:
         if (id == P_DUB_ALIGN) snprintf(o, sz, "%+.0f ms%s", v, v == 0 ? "  (auto)" : v > 0 ? "  (earlier)" : "  (later)");
+        else if (id == P_VERB_PRE) snprintf(o, sz, v < 0.5f ? "Off" : "%.0f ms", v);
         else if (id == P_CLOCK_OFS) snprintf(o, sz, "%+.0f ms%s", v, v == 0 ? "" : v > 0 ? "  (loops earlier)" : "  (loops later)");
         else if (G.eng.p[P_DLY_SYNC] > 0.5f) snprintf(o, sz, "(synced)");
         else snprintf(o, sz, "%.0f ms", v);
@@ -1360,6 +1405,13 @@ static void draw(void)
             continue;
         }
         int id = PAGE_ROWS[G.page][i];
+        if (id <= ROW_H_TONE && id >= ROW_H_VERB) {
+            const char *h = id == ROW_H_TONE ? "DRIVE  CRUSH  FILTER" : id == ROW_H_DLY ? "DELAY  (all tracks' FX send)"
+                          : "REVERB  (the tracks' reverb send)";
+            fill(32, y + rh - 10, 960, 2, C_PANEL2, 255);
+            text(32, y + 8, C_ACCENT, 0.8f, h);
+            continue;
+        }
         const char *label = id >= 0 ? PD[id].name : id == ROW_IN_DEV ? "Input device"
                           : id == ROW_OUT_DEV ? "Output device" : id == ROW_FOLDER ? "Save folder"
                           : id == ROW_TEMPO ? "Tempo" : id == ROW_MIDI_DEV ? "MIDI in" : "Diagnostics";
@@ -1583,6 +1635,7 @@ int main(int argc, char **argv)
     if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
     build_targets();
     for (int k = 0; k < CD_TRACKS; k++) { G.send_mem[k] = 1.f; G.verb_mem[k] = 0.5f; }
+    G.sel_row[PG_FX] = 1;   /* the first setting, under its heading */
     load_cfg();
 
     SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");

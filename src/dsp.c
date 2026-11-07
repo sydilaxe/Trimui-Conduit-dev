@@ -37,6 +37,7 @@ void eng_default_params(float *p)
     eng_default_track(p);   /* unused slots, kept sane */
     p[P_MASTER] = 1.f; p[P_MONITOR] = 0.f;
     eng_reset_fx_params(p);
+    eng_default_verb(p);
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
@@ -48,7 +49,14 @@ void eng_reset_fx_params(float *p)
     p[P_DRIVE] = 0.f;     p[P_BITS] = 16.f;  p[P_DOWNS] = 1.f;
     p[P_DLY_SYNC] = 0.f;  p[P_DLY_TIME] = 350.f; p[P_DLY_FB] = 0.4f;
     p[P_DLY_MIX] = 0.f;   p[P_PINGPONG] = 0.f;
-    p[P_VERB_TYPE] = 0.f; p[P_VERB_TIME] = 8.f; p[P_VERB_LEVEL] = 0.8f;
+    p[P_DLY_TONE] = 0.5f; p[P_DLY_LOWCUT] = 20.f; p[P_DLY_WOW] = 0.f; p[P_DLY_WOW_RATE] = 0.8f; p[P_DLY_DRIVE] = 0.f;
+}
+
+void eng_default_verb(float *p)
+{
+    p[P_VERB_TYPE] = VERB_EXACT_1; p[P_VERB_TIME] = 8.f; p[P_VERB_LEVEL] = 0.8f; p[P_VERB_PRE] = 0.f;
+    p[P_VERB_SIZE] = 1.f; p[P_VERB_DAMP] = 0.5f; p[P_VERB_DIFF] = 0.5f; p[P_VERB_WIDTH] = 1.f;
+    p[P_VERB_LOWCUT] = 20.f; p[P_VERB_HICUT] = 16000.f;
 }
 
 /* ---------------------------------------------------------------- FX */
@@ -93,6 +101,14 @@ void fx_block(FxState *f, const float *p, double bar, float *st, int n)
     float mix = p[P_DLY_MIX];
     int ping = p[P_PINGPONG] > 0.5f;
     float tgt = dly_target(p, bar);
+    /* the repeats: how dark (tone: 1-16 kHz), how thin (low-cut), how they
+     * wobble (wow) and how gritty they get (drive) */
+    float dc = 1.f - expf(-2.f * (float)M_PI * 1000.f * powf(16.f, clampf(p[P_DLY_TONE], 0.f, 1.f)) / CD_SR);
+    float hc = 1.f - expf(-2.f * (float)M_PI * clampf(p[P_DLY_LOWCUT], 20.f, 2000.f) / CD_SR);
+    int lowcut = p[P_DLY_LOWCUT] > 20.5f;
+    float wow = clampf(p[P_DLY_WOW], 0.f, 1.f) * 0.004f * CD_SR;   /* up to +-4 ms */
+    double wstep = 2 * M_PI * clampf(p[P_DLY_WOW_RATE], 0.05f, 10.f) / CD_SR;
+    float dg = 1.f + 4.f * clampf(p[P_DLY_DRIVE], 0.f, 1.f), dsat = p[P_DLY_DRIVE] > 0.001f;
 
     /* smooth cutoff once per block */
     f->cutoff_s += (p[P_CUTOFF] - f->cutoff_s) * 0.25f;
@@ -102,12 +118,12 @@ void fx_block(FxState *f, const float *p, double bar, float *st, int n)
     float k = 2.f - 2.f * clampf(p[P_RESO], 0.f, 0.97f);
     float a1 = 1.f / (1.f + g * (g + k)), a2 = g * a1, a3 = g * a2;
 
-    float dg = 1.f + drive * 15.f, dnorm = 1.f / tanhf(dg);
+    float drg = 1.f + drive * 15.f, dnorm = 1.f / tanhf(drg);
     float q = (float)(1 << (bits > 1 ? bits - 1 : 1));
 
     for (int i = 0; i < n; i++) {
         float x[2] = { st[2 * i], st[2 * i + 1] };
-        if (drive > 0.001f) { x[0] = tanhf(x[0] * dg) * dnorm; x[1] = tanhf(x[1] * dg) * dnorm; }
+        if (drive > 0.001f) { x[0] = tanhf(x[0] * drg) * dnorm; x[1] = tanhf(x[1] * drg) * dnorm; }
         if (downs > 1) {
             if (f->hold_n <= 0) { f->hold[0] = x[0]; f->hold[1] = x[1]; f->hold_n = downs; }
             f->hold_n--;
@@ -129,18 +145,23 @@ void fx_block(FxState *f, const float *p, double bar, float *st, int n)
 
         /* delay with smoothed (tape-style) time and damped feedback */
         f->dly_time_s += (tgt - f->dly_time_s) * 0.0005f;
-        float rp = (float)f->dly_w - f->dly_time_s;
+        float wo = 0.f;
+        if (wow > 0.f) { f->wow_ph += wstep; if (f->wow_ph > 2 * M_PI) f->wow_ph -= 2 * M_PI; wo = wow * (float)sin(f->wow_ph); }
+        float rp = (float)f->dly_w - clampf(f->dly_time_s + wo, 4.f, (float)(CD_DLY_MAX - 4));
         while (rp < 0) rp += CD_DLY_MAX;
         int r0 = (int)rp;
         if (r0 >= CD_DLY_MAX) { r0 = 0; rp = 0; }  /* float rounding at the wrap */
         float fr = rp - r0; int r1 = r0 + 1 == CD_DLY_MAX ? 0 : r0 + 1;
         float dl = f->dly[2 * r0] * (1 - fr) + f->dly[2 * r1] * fr;
         float dr = f->dly[2 * r0 + 1] * (1 - fr) + f->dly[2 * r1 + 1] * fr;
-        f->damp[0] += 0.4f * (dl - f->damp[0]);
-        f->damp[1] += 0.4f * (dr - f->damp[1]);
+        f->damp[0] += dc * (dl - f->damp[0]);
+        f->damp[1] += dc * (dr - f->damp[1]);
+        float rl = f->damp[0], rr = f->damp[1];
+        if (lowcut) { f->hp[0] += hc * (rl - f->hp[0]); f->hp[1] += hc * (rr - f->hp[1]); rl -= f->hp[0]; rr -= f->hp[1]; }
+        if (dsat) { rl = tanhf(rl * dg) / dg; rr = tanhf(rr * dg) / dg; }
         float wl, wr;
-        if (ping) { wl = 0.5f * (x[0] + x[1]) + fb * f->damp[1]; wr = fb * f->damp[0]; }
-        else { wl = x[0] + fb * f->damp[0]; wr = x[1] + fb * f->damp[1]; }
+        if (ping) { wl = 0.5f * (x[0] + x[1]) + fb * rr; wr = fb * rl; }
+        else { wl = x[0] + fb * rl; wr = x[1] + fb * rr; }
         f->dly[2 * f->dly_w] = clampf(wl, -4.f, 4.f);
         f->dly[2 * f->dly_w + 1] = clampf(wr, -4.f, 4.f);
         if (++f->dly_w == CD_DLY_MAX) f->dly_w = 0;
@@ -148,14 +169,6 @@ void fx_block(FxState *f, const float *p, double bar, float *st, int n)
         st[2 * i] = x[0] + mix * dl;
         st[2 * i + 1] = x[1] + mix * dr;
     }
-}
-
-/* Reverb time (s) -> the Bloom's loop gain: 1.0 as the unit, whose tail
- * (in floating point, without its integer rounding) lasts about 14.6 s */
-static float verb_k(const float *p)
-{
-    float T = clampf(p[P_VERB_TIME], 1.f, 30.f);
-    return expf(-4.2f / T) / 0.75f;
 }
 
 /* ------------------------------------------------------------ engine */
@@ -172,7 +185,7 @@ int eng_init(Engine *e, int max_seconds)
         t->gs = t->p[P_FX_SEND];
         t->last_od = -1;
     }
-    if (fx_init(&e->fx) || bloom_init(&e->verb, 1.024)) { eng_free(e); return -1; }
+    if (fx_init(&e->fx) || verb_init(&e->verb)) { eng_free(e); return -1; }
     eng_default_params(e->p);
     fx_reset(&e->fx, e->p);
     e->in_block = 512;
@@ -194,7 +207,7 @@ void eng_free(Engine *e)
         undo_reset(t);
     }
     fx_free(&e->fx);
-    bloom_free(&e->verb);
+    verb_free(&e->verb);
 }
 
 double eng_rate(const float *tp, float bend)
@@ -666,8 +679,6 @@ void eng_render(Engine *e, float *out, int frames)
     double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
     float mix[BLK * 2], snd[BLK * 2], vb[BLK * 2], inb[BLK * 2];
-    int vtype = p[P_VERB_TYPE] > 0.5f;
-    float vk = verb_k(p), vlev = p[P_VERB_LEVEL];
     TC tc[CD_TRACKS];
     int done = 0;
     while (done < frames) {
@@ -822,8 +833,8 @@ void eng_render(Engine *e, float *out, int frames)
             } else tr->bar_edge = 0;
         }
         fx_block(&e->fx, p, tr->cyc, snd, n);
-        bloom_process(&e->verb, vtype, vk, vb, vb, n);
-        for (int i = 0; i < 2 * n; i++) mix[i] += snd[i] + vb[i] * vlev;
+        verb_process(&e->verb, p, vb, n);
+        for (int i = 0; i < 2 * n; i++) mix[i] += snd[i] + vb[i];
         /* the input is heard through Conduit only as far as Input monitor
          * says, overdubbing or not: an interface that monitors its own input
          * would otherwise be heard twice, the second copy late */
@@ -1043,7 +1054,7 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
     double frames = q ? q / 4.0 * cyc : longest;
     if (frames > max_frames) frames = max_frames;
     if (frames < 1 || fx_init(&m->fx)) { m->frames = 0; return 0; }
-    if (bloom_init(&m->verb, 1.024)) { fx_free(&m->fx); m->frames = 0; return 0; }
+    if (verb_init(&m->verb)) { fx_free(&m->fx); m->frames = 0; return 0; }
     fx_reset(&m->fx, m->p);
     m->frames = (int)(frames + 0.5);
     /* one pass first, thrown away, so the delay's tail wraps round seamlessly */
@@ -1061,8 +1072,6 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
 void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n)
 {
     float snd[BLK * 2], vb[BLK * 2];
-    int vtype = m->p[P_VERB_TYPE] > 0.5f;
-    float vk = verb_k(m->p), vlev = m->p[P_VERB_LEVEL];
     for (int done = 0; done < n; done += BLK) {
         int b = n - done < BLK ? n - done : BLK;
         float *mx = mix + 2 * done;
@@ -1091,10 +1100,10 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
             m->pos[k] = wrap(pp, ls, L);
         }
         fx_block(&m->fx, m->p, m->cyc, snd, b);
-        bloom_process(&m->verb, vtype, vk, vb, vb, b);
-        for (int i = 0; i < 2 * b; i++) mx[i] = clampf((mx[i] + snd[i] + vb[i] * vlev) * m->p[P_MASTER], -1.f, 1.f);
+        verb_process(&m->verb, m->p, vb, b);
+        for (int i = 0; i < 2 * b; i++) mx[i] = clampf((mx[i] + snd[i] + vb[i]) * m->p[P_MASTER], -1.f, 1.f);
     }
     m->done += n;
 }
 
-void eng_mix_end(Mixdown *m) { fx_free(&m->fx); bloom_free(&m->verb); }
+void eng_mix_end(Mixdown *m) { fx_free(&m->fx); verb_free(&m->verb); }

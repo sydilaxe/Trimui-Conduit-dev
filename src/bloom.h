@@ -12,28 +12,35 @@
  *
  * Mono in, stereo out, like the unit. It runs at half Conduit's rate
  * (24 kHz, near the MidiVerb II's 23.4 kHz, with the delays scaled to keep
- * its timing), which also keeps its darker top end. */
+ * its timing), which also keeps its darker top end. Unlike the exact
+ * emulation (midiverb2.c) its decay, size, damping and diffusion can be set. */
 #pragma once
 
 #define BLOOM_STAGES 15
 #define BLOOM_SIDE 3
 #define BLOOM_PRE 2000          /* Bloom 2's pre-delay, at the unit's rate (85 ms) */
 
-typedef struct { float *b; int n, w; } BloomLine;
+typedef struct { float *b; int cap, w, d, base; } BloomLine;   /* d: the delay now (up to cap) */
 
 typedef struct {
     float *mem;
     BloomLine pre, chain[BLOOM_STAGES], left[BLOOM_SIDE], right[BLOOM_SIDE];
     float in_lp, fb_lp, loop_prev, out_l, out_r;   /* one-sample states */
+    float size;                                    /* the delays' scale now */
+    float g, damp;                                 /* diffusion (all-pass gain), damping (loop low-pass pole) */
     /* 48 kHz <-> 24 kHz */
     float dec_hist[3], up_l[2], up_r[2];
     int phase;
 } Bloom;
 
-/* scale: the core's rate / 23437.5 Hz (1.024 for 24 kHz; 1.0 runs it at the unit's own rate) */
+/* scale: the core's rate / 23437.5 Hz (1.024 for 24 kHz; 1.0 runs it at the unit's own rate).
+ * Room is made for sizes up to BLOOM_MAX_SIZE. */
+#define BLOOM_MAX_SIZE 1.5f
 int  bloom_init(Bloom *b, double scale);
 void bloom_free(Bloom *b);
 void bloom_reset(Bloom *b);
+/* size 0.5..1.5 (1: as the unit), diffusion 0.25..0.75 (0.5), damping 0..0.9 (0.5) */
+void bloom_set(Bloom *b, float size, float diffusion, float damping);
 
 /* one sample at the core's rate. type 0: Bloom 1, 1: Bloom 2. decay scales
  * the loop's feedback (1.0: as the unit) */
