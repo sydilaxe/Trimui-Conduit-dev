@@ -54,7 +54,8 @@ static const char *const L_DECAY[] = { "While overdubbing", "Always (loop fades)
 static const char *const L_LEN[] = { "Synced (whole bars)", "Free" };
 static const char *const L_VERB[] = { "Bloom 1  exact MidiVerb II #45", "Bloom 2  exact MidiVerb II #49",
                                       "Bloom 1  adjustable", "Bloom 2  adjustable (+85 ms)" };
-static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)" };
+static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)", "Auto (follow a clock when one comes)" };
+static const char *const L_START[] = { "Follow", "Ignore (the clock only)" };
 
 static const ParamDesc PD[P_COUNT] = {
     [P_LOOP_START] = { "Window start", 0, 1, 0.002f, 0.02f, K_LOOPPOS, 0 },
@@ -104,10 +105,12 @@ static const ParamDesc PD[P_COUNT] = {
     [P_AUTOPLAY]   = { "Loop after rec", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_SAVE_FMT]   = { "Save format", 0, 1, 1, 1, K_ENUM, L_FMT },
     [P_DUB_ALIGN]  = { "Dub align", -60, 120, 1, 10, K_MS, 0 },
-    [P_CLOCK]      = { "Sync to", 0, 1, 1, 1, K_ENUM, L_CLOCK },
+    [P_CLOCK]      = { "Sync to", 0, 2, 1, 1, K_ENUM, L_CLOCK },
     [P_REC_WAIT]   = { "Rec waits for bar", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_BEATS]      = { "Beats per bar", 1, 16, 1, 4, K_INT, 0 },
     [P_CLOCK_OFS]  = { "Clock offset", -100, 100, 1, 10, K_MS, 0 },
+    [P_CLOCK_START] = { "MIDI Start/Stop", 0, 1, 1, 1, K_ENUM, L_START },
+    [P_CLOCK_OUT]  = { "Send MIDI clock", 0, 1, 1, 1, K_ENUM, L_ONOFF },
 };
 /* config / MIDI-map keys (loop_decay ... keep the names older versions saved) */
 static const char *const PKEY[P_COUNT] = {
@@ -125,6 +128,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_IN_GAIN] = "in_gain", [P_TRIGGER] = "trigger", [P_THRESH] = "threshold", [P_AUTOPLAY] = "autoplay",
     [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
+    [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_out",
 };
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TEMPO = -5, ROW_MIDI_DEV = -6,
@@ -138,7 +142,7 @@ static const int PAGE_ROWS[PG_N][40] = {
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
       ROW_END },
-    { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
+    { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
     { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
     { ROW_END },
@@ -344,7 +348,7 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 /* ------------------------------------------------------------ config */
 
 static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
-                               P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS,
+                               P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
                                P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT };
 static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC };
@@ -1327,7 +1331,7 @@ static void draw_lane(int k)
         const char *m = "";
         if (t->rec_state == ST_ARMED) {
             if (!t->arm_sync) m = "Waiting for signal above threshold...";
-            else if (G.eng.p[P_CLOCK] > 0.5f && !G.eng.tr.running) m = "Waiting for MIDI clock (Start)...";
+            else if (G.eng.tr.following && !G.eng.tr.running) m = "Waiting for MIDI clock (Start)...";
             else m = "Starts on the next bar...";
         } else if (on) m = "A records here";
         text(LANE_X + 16, mid - 10, C_DIM, 0.9f, m);
@@ -1355,10 +1359,12 @@ static void draw(void)
         for (int b = 0; b < shown; b++)
             fill(316 + b * 18, 22, 14, 14, b == lit ? (b == 0 ? C_ACCENT : C_PLAY) : C_PANEL2, 255);
         char tb[64];
-        if (e->p[P_CLOCK] > 0.5f) {
-            if (e->tr.bpm > 0) snprintf(tb, sizeof tb, "MIDI %.1f BPM%s", e->tr.bpm, e->tr.running ? "" : " (stopped)");
+        int nfol, lstate; midi_link_status(&nfol, &lstate);
+        if (e->tr.following) {
+            if (e->tr.bpm > 0) snprintf(tb, sizeof tb, "%s %.1f BPM%s", e->tr.linked ? "LINK" : "MIDI", e->tr.bpm, e->tr.running ? "" : " (stopped)");
             else snprintf(tb, sizeof tb, "MIDI: no clock");
-        } else if (e->tr.cyc > 0) snprintf(tb, sizeof tb, "bar %.2f s (first loop)", e->tr.cyc / CD_SR);
+        } else if (e->tr.cyc > 0) snprintf(tb, sizeof tb, "bar %.2f s (first loop)%s", e->tr.cyc / CD_SR,
+                                           nfol ? "  LEADING" : "");
         else snprintf(tb, sizeof tb, "first loop sets the bar");
         text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
     }
@@ -1431,9 +1437,12 @@ static void draw(void)
             else if (id == ROW_OUT_DEV) fit(v, sizeof v, G.out_name[0] ? G.out_name : "System default", 56);
             else if (id == ROW_FOLDER) fit(v, sizeof v, G.rec_dir, 56);
             else if (id == ROW_TEMPO) {
-                if (e->tr.bpm > 0) snprintf(v, sizeof v, "MIDI clock %.1f BPM, %s%s", e->tr.bpm, e->tr.ext_run ? "playing" : "stopped",
-                                            e->p[P_CLOCK] > 0.5f ? "" : "  (not followed)");
-                else if (e->tr.cyc > 0) snprintf(v, sizeof v, "bar %.3f s (first loop)", e->tr.cyc / CD_SR);
+                int nfol, lstate; midi_link_status(&nfol, &lstate);
+                if (e->tr.linked) snprintf(v, sizeof v, "a leading Brick (USB link) %.2f BPM, %s", e->tr.bpm, e->tr.running ? "playing" : "stopped");
+                else if (e->tr.bpm > 0) snprintf(v, sizeof v, "MIDI clock %.1f BPM, %s%s", e->tr.bpm, e->tr.ext_run ? "playing" : "stopped",
+                                            e->tr.following ? "" : "  (not followed)");
+                else if (e->tr.cyc > 0) snprintf(v, sizeof v, "bar %.3f s (first loop)%s", e->tr.cyc / CD_SR,
+                                                 nfol ? (nfol == 1 ? ", leading a Brick" : ", leading Bricks") : "");
                 else snprintf(v, sizeof v, "no bar yet: the first synced loop sets it");
             } else if (id == ROW_MIDI_DEV) {
                 midi_devices(md, sizeof md);

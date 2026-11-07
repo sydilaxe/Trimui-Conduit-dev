@@ -22,7 +22,9 @@ extra libraries.
 - **Four tracks:** each up to 120 s, with its own length, volume, pan, mute,
   FX send, reverb send, pitch, window, overdub, decay and 16 levels of undo.
 - **Sync:** the first loop sets the bar, or follow **MIDI clock** from a USB
-  MIDI device (Start, Stop, Continue, tempo changes). Synced takes are whole
+  MIDI device (Start, Stop, Continue, tempo changes), or another Brick over a
+  **USB link** (a hub, no MIDI interface needed). Leading, Conduit sends MIDI
+  clock to your other gear and to linked Bricks. Synced takes are whole
   bars (or ½, ¼ bar), start on the next bar line (switchable) and stop on one.
   Any track can be **Free** instead: any length, its own time.
 - **MIDI:** map every control (record, play, overdub, erase, undo, track
@@ -100,7 +102,39 @@ clock coming in over USB. Takes armed before the clock starts begin on bar 1
 when Start arrives; Stop pauses the synced tracks, and Start plays them from
 bar 1 again. Tempo changes are followed: the loops speed up and slow down
 with the clock, like tape. If the loops sit a little early or late against
-your other gear, trim **SYNC → Clock offset**.
+your other gear, trim **SYNC → Clock offset**. The tempo comes from a
+straight line through the last four beats of ticks, so USB's timing jitter
+averages out: the loops hold within about a quarter of a millisecond of the
+clock.
+
+**Sync to: Auto** follows a MIDI clock (or a leading Brick on the USB link)
+while one comes in, and otherwise the first loop sets the bar as with
+*Internal*. **SYNC → MIDI Start/Stop: Ignore** follows the clock's tempo but
+not its Start, Stop and Continue: you start and stop the loops yourself
+(from a leading Brick they still line up with its bar).
+
+While Conduit leads (*Internal*, or *Auto* with nothing coming in) and **SYNC →
+Send MIDI clock** is On (the default), it sends MIDI clock to every MIDI port,
+24 ticks a beat at the first loop's tempo (a bar of *Beats per bar* beats),
+timed to the sound as it comes out of your audio interface: Start when the
+loops start on the bar (song position and Continue when later), Stop when
+they stop.
+
+### Linking Bricks over USB
+
+Several Bricks can play in time by cable, with no MIDI interface between them:
+the **leader** has a USB hub in its **top** port, and each **follower** plugs its
+**bottom** (charging) port into the same hub with a data cable. Use a powered
+hub: each follower charges from it. Nothing to set up: Conduit offers its bottom
+port as a "TrimUI clock link" when it starts, and a leader finds the Bricks on
+its hub within a second and sends them its clock, Start and Stop, and where its
+sound is 50 times a second, at its exact tempo. A follower set to *Auto* or *MIDI
+clock* puts its loops there, within a few hundredths of a millisecond, at any
+tempo. It's the same link as Columbia Street's, so either app can lead the
+other, and a leader can still use USB audio and MIDI gear on the same hub.
+**SYNC → Tempo** says what the transport follows (*a leading Brick (USB link)*)
+or that it leads. `CONDUIT_LINK=0` in `launch.sh` leaves the bottom port alone;
+`CONDUIT_MIDI_CLOCK=0` never sends clock.
 
 A synced track pitched away from 0 plays free (it's faster or slower); set
 it back to 0 and it rejoins the beat. A *Free* track is any length and runs
@@ -325,8 +359,9 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 
 ```
 src/main.c          UI, input (buttons, sticks, MIDI map), devices, save/load, self-test
-src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock), overdub/undo, FX, mixdown
-src/midi.c          USB MIDI in: raw ALSA devices, parser, reader thread
+src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock, the USB link), overdub/undo, FX, mixdown
+src/midi.c          USB MIDI in and clock out: raw ALSA devices, parser, reader thread; the USB link's leader side
+src/link.c          the clock link between Bricks: the bottom port as a USB gadget (configfs, FunctionFS), finding followers
 src/verb.c          the reverb send: tone, pre-delay, the Bloom, width, level
 src/midiverb2.c     MidiVerb II programs 45 and 49, exact (from midiverb_emulator)
 src/bloom.c         the adjustable Bloom (the same design in floating point)

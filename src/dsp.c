@@ -41,6 +41,7 @@ void eng_default_params(float *p)
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
+    p[P_CLOCK_START] = START_FOLLOW; p[P_CLOCK_OUT] = 1.f;
 }
 
 void eng_reset_fx_params(float *p)
@@ -269,15 +270,50 @@ void eng_push_input(Engine *e, const float *in, int frames)
     __atomic_store_n(&e->ring_w, w, __ATOMIC_RELEASE);
 }
 
-void eng_midi_clock(Engine *e, uint8_t msg, double t)
+/* the transport follows something else now: always with Sync to MIDI, with
+ * Auto while a clock or a leading Brick comes */
+static int follows_now(const Engine *e)
+{
+    int m = (int)(e->p[P_CLOCK] + 0.5f);
+    return m == CLOCK_MIDI || (m == CLOCK_AUTO && e->tr.following);
+}
+
+static void ev_push(Engine *e, uint8_t msg, double t, double pos, double bpm)
 {
     uint32_t w = __atomic_load_n(&e->ev_w, __ATOMIC_RELAXED);
     uint32_t r = __atomic_load_n(&e->ev_r, __ATOMIC_ACQUIRE);
     if (w - r >= CD_EVQ) return;
-    e->evq[w & (CD_EVQ - 1)].msg = msg;
-    e->evq[w & (CD_EVQ - 1)].t = t;
+    ClockEv *ev = &e->evq[w & (CD_EVQ - 1)];
+    ev->msg = msg, ev->t = t, ev->pos = pos, ev->bpm = bpm;
     __atomic_store_n(&e->ev_w, w + 1, __ATOMIC_RELEASE);
 }
+
+void eng_link_pos(Engine *e, double pos16, double bpm, int playing, double t)
+{
+    ev_push(e, playing ? 0xF0 : 0xF1, t, pos16, bpm);
+}
+
+int eng_heard(Engine *e, double t, double *pos16, double *bpm, int *running, int *following)
+{
+    Transport *tr = &e->tr;
+    for (int tries = 0; tries < 8; tries++) {
+        uint32_t s0 = __atomic_load_n(&tr->snap_seq, __ATOMIC_ACQUIRE);
+        if (s0 & 1) continue;
+        double st = tr->snap_t, ph = tr->snap_phase, rate = tr->snap_rate;
+        int beats = tr->snap_beats, run = tr->snap_run, fol = tr->snap_follow;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&tr->snap_seq, __ATOMIC_RELAXED) != s0) continue;
+        if (!s0 || beats < 1) return 0;
+        *pos16 = (ph + (run ? (t - st) * rate : 0.0)) * beats * 4.0;
+        *bpm = rate * beats * 60.0;
+        *running = run;
+        *following = fol;
+        return 1;
+    }
+    return 0;
+}
+
+void eng_midi_clock(Engine *e, uint8_t msg, double t) { ev_push(e, msg, t, 0, 0); }
 
 static void do_clear(Track *t)
 {
@@ -370,7 +406,7 @@ static void handle_cmds(Engine *e, Track *t)
             else if (t->stop_cyc <= 0) quantized_stop(e, t);
         } else if (t->rec_state == ST_ARMED) t->rec_state = ST_IDLE;
         else if (!e->busy) {
-            int want_sync = t->p[P_SYNC] < 0.5f, midi = e->p[P_CLOCK] > 0.5f;
+            int want_sync = t->p[P_SYNC] < 0.5f, midi = follows_now(e);
             int first = want_sync && !midi && !other_synced(e, t);
             if (want_sync && !first) {
                 if (!e->tr.running || e->p[P_REC_WAIT] > 0.5f) arm(t, 1);
@@ -583,19 +619,40 @@ static void measure_input_clock(Engine *e, uint32_t w)
     e->rm_wl = w; e->rm_ol = now;
 }
 
-/* follow the MIDI clock (or the first loop): the transport's phase and rate */
-static void transport_update(Engine *e, const float *p)
+/* lock the transport onto target (bars) as heard: a jump when far off,
+ * else a hair faster or slower (at most 0.5%) */
+static void transport_lock(Transport *tr, double target)
+{
+    if (!tr->locked || fabs(target - tr->phase) * tr->cyc > 0.03 * CD_SR) {
+        tr->phase = target; tr->err_avg = 0; tr->locked = 1;
+        double f = target - floor(target);
+        if (f * tr->cyc < 0.25 * CD_SR) tr->bar_edge = 1;   /* (re)started on or just after the bar */
+    } else {
+        double err = (target - tr->phase) * tr->cyc;
+        tr->err_avg += (err - tr->err_avg) * 0.1;
+    }
+    tr->rate = (1.0 + clampd(tr->err_avg * 2e-5, -0.005, 0.005)) / tr->cyc;
+    tr->running = 1;
+}
+
+#define LINK_TRANSIT 0.0003 /* a bulk transfer through a hub and the follower's thread waking (s) */
+
+/* follow the MIDI clock, a leading Brick or the first loop: the transport's phase and rate */
+static void transport_follow(Engine *e, const float *p, double now)
 {
     Transport *tr = &e->tr;
-    double now = e->now ? e->now() : eng_clock();
     const int N = CD_PPQ * 4;
+    int ignore = p[P_CLOCK_START] > 0.5f;   /* the clock's Start / Stop / Continue pass by */
     uint32_t w = __atomic_load_n(&e->ev_w, __ATOMIC_ACQUIRE), r = e->ev_r;
     while (r != w) {
         ClockEv ev = e->evq[r & (CD_EVQ - 1)]; r++;
         switch (ev.msg) {
-        case 0xFA: tr->ticks = -1; tr->tick_t = ev.t; tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
-        case 0xFB: tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
-        case 0xFC: tr->ext_run = 0; tr->seen_transport = 1; break;
+        case 0xFA: if (ignore) break; tr->ticks = -1; tr->tick_t = ev.t; tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
+        case 0xFB: if (ignore) break; tr->ext_run = 1; tr->seen_transport = 1; tr->locked = 0; break;
+        case 0xFC: if (ignore) break; tr->ext_run = 0; tr->seen_transport = 1; break;
+        case 0xF0: case 0xF1: /* a leading Brick's position */
+            tr->lk_t = ev.t; tr->lk_pos = ev.pos; tr->lk_bpm = ev.bpm; tr->lk_play = ev.msg == 0xF0;
+            break;
         case 0xF8: {
             double last = tr->hist[(tr->hist_w + N - 1) % N];
             if (tr->hist_n && ev.t - last > 1.0) tr->hist_n = 0;   /* a gap: measure afresh */
@@ -609,40 +666,79 @@ static void transport_update(Engine *e, const float *p)
     }
     __atomic_store_n(&e->ev_r, r, __ATOMIC_RELEASE);
 
-    double iv = 0;
-    if (tr->hist_n >= 3) {   /* a first guess from two ticks, better with every tick (up to a bar) */
+    double iv = 0, fit_newest = tr->tick_t;
+    if (tr->hist_n >= 3) {
+        /* a straight line through the ticks (up to four beats): its slope is the
+         * tick interval and its end where the newest tick really was, so USB's
+         * jitter on each tick averages out rather than nudging the transport */
         double newest = tr->hist[(tr->hist_w + N - 1) % N];
-        double oldest = tr->hist[(tr->hist_w + N - tr->hist_n) % N];
-        iv = (newest - oldest) / (tr->hist_n - 1);
+        double base = tr->hist[(tr->hist_w + N - tr->hist_n) % N];
+        double n = tr->hist_n, sx = 0, sy = 0, sxx = 0, sxy = 0;
+        for (int i = 0; i < tr->hist_n; i++) {
+            double y = tr->hist[(tr->hist_w + N - tr->hist_n + i) % N] - base;
+            sx += i, sy += y, sxx += (double)i * i, sxy += i * y;
+        }
+        iv = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+        fit_newest = base + (sy - iv * sx) / n + iv * (n - 1);
         if (now - newest > 0.5 || iv <= 1e-4) iv = 0;   /* the clock stopped coming */
     }
     tr->bpm = iv > 0 ? 60.0 / (iv * CD_PPQ) : 0;
+    int linked = tr->lk_t > 0 && now - tr->lk_t < 0.5 && tr->lk_bpm >= 20;
+    if (linked)
+        tr->bpm = tr->lk_bpm;
+    int mode = (int)(p[P_CLOCK] + 0.5f);
+    tr->following = mode == CLOCK_MIDI || (mode == CLOCK_AUTO && (linked || iv > 0));
+    tr->linked = tr->following && linked;
 
-    if (p[P_CLOCK] < 0.5f) {
+    if (!tr->following) {
         tr->running = tr->cyc > 0;
         tr->rate = tr->cyc > 0 ? 1.0 / tr->cyc : 0;
         tr->locked = 0;
         return;
     }
     int beats = (int)p[P_BEATS]; if (beats < 1) beats = 1;
+    /* when this block is heard */
+    double T = now + e->lat_frames / (double)CD_SR + p[P_CLOCK_OFS] * 0.001;
+    if (linked) {
+        /* a leading Brick says where its sound is, at its exact tempo: the
+         * transport goes where that sound will be when this block is heard */
+        if (!tr->lk_play && !ignore) { tr->running = 0; tr->rate = 0; tr->locked = 0; return; }
+        tr->cyc = 60.0 / tr->lk_bpm * beats * CD_SR;
+        double lead = tr->lk_pos + (T - tr->lk_t + LINK_TRANSIT) * tr->lk_bpm / 15.0;
+        double target = lead / (4.0 * beats);
+        if (ignore && tr->locked) { /* started by hand: the bar lines up, the count stays ours */
+            double d = target - tr->phase;
+            target = tr->phase + (d - floor(d + 0.5));
+        }
+        transport_lock(tr, target);
+        return;
+    }
     double tpb = (double)CD_PPQ * beats;
     if (iv <= 0 || !tr->ext_run || tr->ticks < 0) { tr->running = 0; tr->rate = 0; tr->locked = 0; return; }
     tr->cyc = iv * CD_SR * tpb;
     /* where the clock is when this block is heard */
-    double T = now + e->lat_frames / (double)CD_SR + p[P_CLOCK_OFS] * 0.001;
-    double dt = clampd((T - tr->tick_t) / iv, -2.0, 2.0);
-    double target = (tr->ticks + dt) / tpb;
-    if (!tr->locked || fabs(target - tr->phase) * tr->cyc > 0.03 * CD_SR) {
-        tr->phase = target; tr->err_avg = 0; tr->locked = 1;
-        double f = target - floor(target);
-        if (f * tr->cyc < 0.25 * CD_SR) tr->bar_edge = 1;   /* (re)started on or just after the bar */
-    } else {
-        double err = (target - tr->phase) * tr->cyc;
-        tr->err_avg += (err - tr->err_avg) * 0.1;
-    }
-    /* follow it a hair faster or slower (at most 0.5%) rather than jumping */
-    tr->rate = (1.0 + clampd(tr->err_avg * 2e-5, -0.005, 0.005)) / tr->cyc;
-    tr->running = 1;
+    /* the newest tick as the line has it (the raw one until the line spans a few) */
+    double tick_t = tr->hist_n >= 8 && tr->ext_run && fabs(fit_newest - tr->tick_t) < iv ? fit_newest : tr->tick_t;
+    double dt = clampd((T - tick_t) / iv, -2.0, 2.0);
+    transport_lock(tr, (tr->ticks + dt) / tpb);
+}
+
+static void transport_update(Engine *e, const float *p)
+{
+    Transport *tr = &e->tr;
+    double now = e->now ? e->now() : eng_clock();
+    transport_follow(e, p, now);
+    /* for the clock out: where this block will be heard */
+    int beats = (int)p[P_BEATS]; if (beats < 1) beats = 1;
+    __atomic_store_n(&tr->snap_seq, tr->snap_seq + 1, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    tr->snap_t = now + e->lat_frames / (double)CD_SR;
+    tr->snap_phase = tr->phase;
+    tr->snap_rate = tr->rate * CD_SR;
+    tr->snap_beats = beats;
+    tr->snap_run = tr->running && tr->cyc > 0;
+    tr->snap_follow = tr->following;
+    __atomic_store_n(&tr->snap_seq, tr->snap_seq + 1, __ATOMIC_RELEASE);
 }
 
 void eng_render(Engine *e, float *out, int frames)
@@ -724,7 +820,7 @@ void eng_render(Engine *e, float *out, int frames)
                             prep(e, t, c);
                         }
                     } else if (m >= thr) {
-                        int first = t->p[P_SYNC] < 0.5f && p[P_CLOCK] < 0.5f && !other_synced(e, t);
+                        int first = t->p[P_SYNC] < 0.5f && !follows_now(e) && !other_synced(e, t);
                         start_rec(e, t, tr->phase, 0, first); prep(e, t, c);
                     }
                 }
@@ -990,7 +1086,7 @@ void eng_set_buffer(Engine *e, int ti, const float *st, int frames)
             memcpy(t->buf + 2 * (size_t)frames, t->buf, sizeof(float) * 2 * CD_XFADE);
             t->len = t->rec_pos = frames + CD_XFADE;
             t->cycles = whole; t->cyc_rec = frames / whole; t->phase0 = 0; t->synced = 1;
-        } else if (e->p[P_CLOCK] < 0.5f && !other_synced(e, t)) {
+        } else if (!follows_now(e) && !other_synced(e, t)) {
             /* the only synced track: it sets the bar */
             e->tr.cyc = play; e->tr.phase = 0; e->tr.rate = 1.0 / play; e->tr.running = 1;
             t->phase0 = 0; t->cyc_rec = play; t->cycles = 1; t->synced = 1;
