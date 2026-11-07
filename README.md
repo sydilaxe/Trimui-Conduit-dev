@@ -102,6 +102,11 @@ A synced track pitched away from 0 plays free (it's faster or slower); set
 it back to 0 and it rejoins the beat. A *Free* track is any length and runs
 in its own time.
 
+**TRACK → Volume** goes to 150%. Turned up, a track stays clean until it
+would distort; then it's rounded off with a warm soft clip (a little
+asymmetric, like tape) instead of clipping hard. Quiet parts just get
+louder.
+
 **TRACK → FX send** sets how much of the track goes through the master FX
 (FX tab): *100%* (the default) is all of it, *Off* keeps it dry, past the
 FX, and anything between is a blend of the two. SELECT + ↑ switches it off

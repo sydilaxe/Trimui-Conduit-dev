@@ -390,6 +390,25 @@ static inline float sat(float x)
     return x < 0 ? -y : y;
 }
 
+/* A track turned up until it would distort (volume past 100%, a hot take)
+ * is rounded off warmly instead of clipped: untouched below the knee, then
+ * easing towards full scale with the same slope at the knee, so nothing
+ * changes until it would clip. The knee is a little lower on the positive
+ * side, which adds the even harmonics that make tape and valves sound warm;
+ * the offset that leaves is taken out of the distortion alone (dc), so a
+ * clean signal is never filtered. */
+static inline float warm_clip(float x, float *dc)
+{
+    float a = fabsf(x), k = x > 0 ? 0.75f : 0.9f;
+    if (a <= k && fabsf(*dc) < 1e-7f) return x;
+    float y = x;
+    if (a > k) { y = k + (1 - k) * tanhf((a - k) / (1 - k)); if (x < 0) y = -y; }
+    float d = y - x;
+    *dc += (d - *dc) * 0.0013f;          /* ~10 Hz */
+    if (fabsf(*dc) < 1e-7f && a <= k) *dc = 0;
+    return x + d - *dc;
+}
+
 static inline void od_write(float *buf, int idx, float il, float ir, float keep)
 {
     buf[2 * idx] = sat(buf[2 * idx] * keep + il);
@@ -771,7 +790,8 @@ void eng_render(Engine *e, float *out, int frames)
                 if (!c->lock) t->pos = wrap(t->pos + c->speed, ls, L);
                 /* the FX send splits the track: that much goes through the
                  * master FX, the rest past it (dry) */
-                float ol = dl * t->play_g * t->gl, orr = dr * t->play_g * t->gr;
+                float ol = warm_clip(dl * t->play_g * t->gl, &t->dc[0]);
+                float orr = warm_clip(dr * t->play_g * t->gr, &t->dc[1]);
                 sl += ol * t->gs; sr += orr * t->gs;
                 ml += ol * (1 - t->gs); mr += orr * (1 - t->gs);
             }
@@ -1038,7 +1058,7 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
                 pp = wrap(pp, ls, L);
                 loop_at(t->buf, ls, le, xf, pp, &l, &r);
                 pp += m->speed[k];
-                l *= m->gl[k]; r *= m->gr[k];
+                l = warm_clip(l * m->gl[k], &m->dc[k][0]); r = warm_clip(r * m->gr[k], &m->dc[k][1]);
                 if (sk) { sk[2 * i] = l; sk[2 * i + 1] = r; }
                 if (!m->mute[k]) {
                     mx[2 * i] += l * (1 - sd); mx[2 * i + 1] += r * (1 - sd);

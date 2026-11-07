@@ -704,6 +704,55 @@ static void test_fx_send(void)
     eng_free(e); free(e);
 }
 
+/* Volume past 100%: clean gain until it would distort, then a warm soft
+ * clip (rounded, a little asymmetric, no DC left), never a hard clip */
+static void test_warm_clip(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = 24000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    e->p[P_MASTER] = 1; e->trk[0].p[P_FX_SEND] = 0;
+    float in[512 * 2] = { 0 }, out[512 * 2];
+    char msg[200];
+    for (int pass = 0; pass < 2; pass++) {
+        float amp = pass == 0 ? 0.4f : 0.9f;   /* x1.5: 0.6 (fine), 1.35 (would clip) */
+        fill_sine(st, n, 200, amp);
+        eng_set_buffer(e, 0, st, n);
+        e->trk[0].p[P_VOLUME] = 1.5f;
+        eng_play_toggle(e, 0);
+        float pk;
+        run_silence(e, 24000, &pk);
+        double sum = 0; float hi = 0, lo = 0, even = 0; int flat = 0, cnt = 0; float prev = 0;
+        static float hist[94 * 512];
+        for (int k = 0; k < 94; k++) {
+            eng_push_input(e, in, 512); eng_render(e, out, 512);
+            for (int i = 0; i < 512; i++) {
+                float v = out[2 * i];
+                hist[cnt] = v;
+                /* odd harmonics only (symmetric): v(t) = -v(t + half a period) */
+                if (cnt >= 120) even = fmaxf(even, fabsf(v + hist[cnt - 120]));
+                sum += v; cnt++;
+                hi = fmaxf(hi, v); lo = fminf(lo, v);
+                if (fabsf(v) > 0.5f && v == prev) flat++;
+                prev = v;
+            }
+        }
+        if (pass == 0) {
+            snprintf(msg, sizeof msg, "150%% of a 0.4 sine: clean gain, peak %.4f (want 0.6000)", hi);
+            T(fabsf(hi - 0.6f) < 0.002f && fabsf(lo + 0.6f) < 0.002f, msg);
+        } else {
+            snprintf(msg, sizeof msg, "150%% of a 0.9 sine (1.35): rounded off at +%.3f / %.3f, warm (even harmonics %.3f), mean %.4f, no flat tops",
+                     hi, lo, even, sum / cnt);
+            T(hi < 1.0f && hi > 0.85f && -lo < 1.05f && even > 0.01f && fabs(sum / cnt) < 0.005 && flat == 0, msg);
+        }
+        eng_play_toggle(e, 0);
+        run_silence(e, 4096, &pk);
+    }
+    free(st);
+    eng_free(e); free(e);
+}
+
 int main(void)
 {
     test_rate_mismatch();
@@ -892,6 +941,7 @@ int main(void)
     test_midi_clock();
     test_midi_parse();
     test_fx_send();
+    test_warm_clip();
 
     printf(fails ? "\n%d FAILED\n" : "\nall tests passed\n", fails);
     return fails != 0;

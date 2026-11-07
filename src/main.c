@@ -1154,7 +1154,10 @@ static void value_str(int id, char *o, size_t sz)
     const ParamDesc *d = &PD[id]; float v = *pp(id);
     switch (d->kind) {
     case K_ENUM: snprintf(o, sz, "%s", d->labels[(int)v]); break;
-    case K_PCT: snprintf(o, sz, "%.0f%%", v * 100); break;
+    case K_PCT:
+        if (id == P_VOLUME && v > 1.001f) snprintf(o, sz, "%.0f%%  (warm soft clip if it would distort)", v * 100);
+        else snprintf(o, sz, "%.0f%%", v * 100);
+        break;
     case K_SEND:
         if (v < 0.005f) snprintf(o, sz, "Off  (dry, past the FX)");
         else if (v > 0.995f) snprintf(o, sz, "100%%  (all through the FX)");
