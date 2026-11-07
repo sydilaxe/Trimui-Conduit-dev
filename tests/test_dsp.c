@@ -753,6 +753,114 @@ static void test_warm_clip(void)
     eng_free(e); free(e);
 }
 
+/* Reverb: its own send (0 by default), the Bloom swells then rings out for
+ * about the Reverb time, wide (left and right differ), Bloom 2 starts 85 ms
+ * later, it stays stable at the longest time, and the saved mix has it */
+static double verb_run(Engine *e, int type, float time, double *onset_ms, double *db_at4, double *corr, int *swell)
+{
+    int n = 4800 + CD_XFADE;
+    float *st = calloc((size_t)n * 2, sizeof(float));
+    srand(5);
+    for (int i = 0; i < 2400; i++) st[2 * i] = st[2 * i + 1] = 0.3f * ((rand() % 20001) / 10000.f - 1);
+    eng_set_buffer(e, 0, st, n);
+    free(st);
+    e->p[P_VERB_TYPE] = (float)type; e->p[P_VERB_TIME] = time; e->p[P_VERB_LEVEL] = 1;
+    e->trk[0].p[P_FX_SEND] = 0; e->trk[0].p[P_VERB_SEND] = 1;
+    bloom_reset(&e->verb);
+    float in[512 * 2] = { 0 }, out[512 * 2];
+    float pk;
+    run_silence(e, 8192, &pk);                       /* the FIFO primes, nothing plays */
+    eng_play_toggle(e, 0);
+    /* one pass of the burst, then stop: what's left is the reverb */
+    double e100[80] = { 0 }, lr = 0, ll = 0, rr = 0;
+    int first = -1, frames = 0;
+    for (int k = 0; k < 750; k++) {                  /* 8 s */
+        if (k == 9) eng_play_toggle(e, 0);           /* ~0.1 s in: the burst has played */
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        for (int i = 0; i < 512; i++, frames++) {
+            float l = out[2 * i], r = out[2 * i + 1];
+            if (frames > 4800 + 240 && first < 0 && fabsf(l) + fabsf(r) > 1e-3f) first = frames;
+            if (frames / 4800 < 80) e100[frames / 4800] += l * l + r * r;
+            if (frames > 9600 && frames < 4 * 48000) { lr += l * r; ll += l * l; rr += r * r; }
+        }
+    }
+    double top = 0; int at = 0;
+    for (int s = 2; s < 80; s++) if (e100[s] > top) { top = e100[s]; at = s; }
+    *onset_ms = first / 48.0;
+    *db_at4 = 10 * log10(e100[40] / top + 1e-30);
+    *corr = lr / sqrt(ll * rr + 1e-30);
+    *swell = at;
+    return top;
+}
+
+static void test_reverb(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    char msg[200];
+    double on1, on2, d8, d2, c, c2, dummy;
+    int sw, sw2;
+    /* send 0: nothing reaches it */
+    {
+        int n = 4800 + CD_XFADE;
+        float *st = calloc((size_t)n * 2, sizeof(float));
+        for (int i = 0; i < 2400; i++) st[2 * i] = st[2 * i + 1] = 0.3f;
+        eng_set_buffer(e, 0, st, n); free(st);
+        e->p[P_VERB_LEVEL] = 1;
+        float pk; run_silence(e, 8192, &pk);
+        eng_play_toggle(e, 0); run_silence(e, 4800, &pk);
+        eng_play_toggle(e, 0); run_silence(e, 4800, &pk);
+        run_silence(e, 48000, &pk);
+        snprintf(msg, sizeof msg, "reverb send 0 (the default): no reverb (%.6f after the loop stops)", pk);
+        T(pk < 1e-6f, msg);
+    }
+    verb_run(e, 0, 8, &on1, &d8, &c, &sw);
+    snprintf(msg, sizeof msg, "Bloom 1: swells to its peak at %.1f s, %.0f dB 4 s on (8 s time), wide (L/R correlation %.2f)", sw * 0.1, d8, c);
+    T(sw >= 3 && sw <= 12 && d8 > -40 && d8 < -15 && fabs(c) < 0.3, msg);
+    verb_run(e, 0, 2, &dummy, &d2, &c2, &sw2);
+    snprintf(msg, sizeof msg, "Reverb time 2 s: %.0f dB 4 s on (8 s: %.0f dB)", d2, d8);
+    T(d2 < d8 - 30, msg);
+    verb_run(e, 1, 7, &on2, &dummy, &c2, &sw2);
+    snprintf(msg, sizeof msg, "Bloom 2 starts %.0f ms after Bloom 1 (its 85 ms pre-delay)", on2 - on1);
+    T(on2 - on1 > 75 && on2 - on1 < 95, msg);
+
+    /* the longest time, fed for a minute: stays bounded */
+    {
+        Bloom b; bloom_init(&b, 1.024);
+        float x[512 * 2], y[512 * 2], top = 0;
+        srand(9);
+        for (int k = 0; k < 6000; k++) {
+            for (int i = 0; i < 1024; i++) x[i] = k < 3000 ? 0.5f * ((rand() % 20001) / 10000.f - 1) : 0;
+            bloom_process(&b, 0, expf(-4.2f / 30) / 0.75f, x, y, 512);
+            for (int i = 0; i < 1024; i++) { if (!isfinite(y[i])) top = 1e9f; top = fmaxf(top, fabsf(y[i])); }
+        }
+        snprintf(msg, sizeof msg, "30 s reverb fed loud noise for 32 s: stays bounded (peak %.2f)", top);
+        T(top < 4.f, msg);
+        bloom_free(&b);
+    }
+
+    /* the saved mix has the reverb; the saved track doesn't */
+    {
+        int n = 24000 + CD_XFADE;
+        float *st = calloc((size_t)n * 2, sizeof(float));
+        for (int i = 0; i < 1200; i++) st[2 * i] = st[2 * i + 1] = 0.3f * sinf(i * 0.3f);
+        eng_set_buffer(e, 0, st, n); free(st);
+        e->p[P_VERB_TYPE] = 0; e->p[P_VERB_TIME] = 8;
+        e->trk[0].p[P_VERB_SEND] = 1;
+        Mixdown m;
+        int len = eng_mix_begin(e, &m, 1 << 26);
+        float *mix = malloc(sizeof(float) * 2 * len), *stem = malloc(sizeof(float) * 2 * len), *stems[CD_TRACKS] = { stem };
+        eng_mix_render(e, &m, mix, stems, len);
+        eng_mix_end(&m);
+        double tm = 0, ts = 0;
+        for (int i = 2 * 4800; i < 2 * len; i++) { tm += fabs(mix[i]); ts += fabs(stem[i]); }
+        snprintf(msg, sizeof msg, "the saved mix carries the reverb tail (%.1f), the saved track is dry (%.4f)", tm, ts);
+        T(tm > 10 && ts < 1e-6, msg);
+        free(mix); free(stem);
+    }
+    eng_free(e); free(e);
+}
+
 int main(void)
 {
     test_rate_mismatch();
@@ -942,6 +1050,7 @@ int main(void)
     test_midi_parse();
     test_fx_send();
     test_warm_clip();
+    test_reverb();
 
     printf(fails ? "\n%d FAILED\n" : "\nall tests passed\n", fails);
     return fails != 0;

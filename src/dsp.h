@@ -2,6 +2,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include "bloom.h"
 
 #define CD_SR 48000
 #define CD_TRACKS 4
@@ -14,13 +15,15 @@
 typedef enum {
     /* per track (Track.p) */
     P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_DECAY, P_DECAY_MODE,
-    P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_SYNC,
+    P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_VERB_SEND, P_SYNC,
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
     /* master FX */
     P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS,
     P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG,
+    /* the reverb (its own send) */
+    P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL,
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
     /* sync */
@@ -89,7 +92,7 @@ typedef struct {
     double od_comp;            /* overdub write offset, fixed when writing starts */
     float play_g;              /* play / stop fade */
     float gl, gr;              /* smoothed output gains (volume, pan, mute) */
-    float gs;                  /* smoothed FX send */
+    float gs, gv;              /* smoothed FX and reverb sends */
     float dc[2];               /* the soft clipper's DC blocker */
     double xpos; int xleft;    /* jump crossfade: the old playhead, fading out */
     int snap;                  /* next locked frame jumps without a crossfade */
@@ -153,6 +156,7 @@ typedef struct {
     volatile uint32_t underruns, overruns;
     volatile float in_peak, out_peak;
     FxState fx;
+    Bloom verb;
 } Engine;
 
 int  eng_init(Engine *e, int max_seconds);   /* per track */
@@ -197,8 +201,9 @@ typedef struct {
     float p[P_COUNT], tp[CD_TRACKS][P_TRACK_N];
     double pos[CD_TRACKS], speed[CD_TRACKS], cyc;
     int on[CD_TRACKS], ls[CD_TRACKS], le[CD_TRACKS], xf[CD_TRACKS];
-    float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS], dc[CD_TRACKS][2];
+    float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS], vsend[CD_TRACKS], dc[CD_TRACKS][2];
     FxState fx;
+    Bloom verb;
 } Mixdown;
 int  eng_mix_begin(Engine *e, Mixdown *m, int max_frames);  /* frames, 0 if there's nothing */
 void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n);

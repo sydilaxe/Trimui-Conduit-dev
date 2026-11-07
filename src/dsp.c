@@ -27,7 +27,7 @@ void eng_default_track(float *tp)
     memset(tp, 0, sizeof(float) * P_TRACK_N);
     tp[P_LOOP_START] = 0.f; tp[P_LOOP_END] = 1.f;
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
-    tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_SYNC] = SYNC_ON;
+    tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
 }
 
 void eng_default_params(float *p)
@@ -47,6 +47,7 @@ void eng_reset_fx_params(float *p)
     p[P_DRIVE] = 0.f;     p[P_BITS] = 16.f;  p[P_DOWNS] = 1.f;
     p[P_DLY_SYNC] = 0.f;  p[P_DLY_TIME] = 350.f; p[P_DLY_FB] = 0.4f;
     p[P_DLY_MIX] = 0.f;   p[P_PINGPONG] = 0.f;
+    p[P_VERB_TYPE] = 0.f; p[P_VERB_TIME] = 8.f; p[P_VERB_LEVEL] = 0.8f;
 }
 
 /* ---------------------------------------------------------------- FX */
@@ -148,6 +149,14 @@ void fx_block(FxState *f, const float *p, double bar, float *st, int n)
     }
 }
 
+/* Reverb time (s) -> the Bloom's loop gain: 1.0 as the unit, whose tail
+ * (in floating point, without its integer rounding) lasts about 14.6 s */
+static float verb_k(const float *p)
+{
+    float T = clampf(p[P_VERB_TIME], 1.f, 30.f);
+    return expf(-4.2f / T) / 0.75f;
+}
+
 /* ------------------------------------------------------------ engine */
 
 int eng_init(Engine *e, int max_seconds)
@@ -162,7 +171,7 @@ int eng_init(Engine *e, int max_seconds)
         t->gs = t->p[P_FX_SEND];
         t->last_od = -1;
     }
-    if (fx_init(&e->fx)) { eng_free(e); return -1; }
+    if (fx_init(&e->fx) || bloom_init(&e->verb, 1.024)) { eng_free(e); return -1; }
     eng_default_params(e->p);
     fx_reset(&e->fx, e->p);
     e->in_block = 512;
@@ -184,6 +193,7 @@ void eng_free(Engine *e)
         undo_reset(t);
     }
     fx_free(&e->fx);
+    bloom_free(&e->verb);
 }
 
 double eng_rate(const float *tp, float bend)
@@ -464,7 +474,7 @@ typedef struct {
     int rev, lock, gate;
     float keep; int decay_always;
     float gl, gr;              /* output gain targets */
-    float send;                /* FX send target */
+    float send, vsend;         /* FX and reverb send targets */
 } TC;
 
 static void prep(const Engine *e, const Track *t, TC *c)
@@ -492,6 +502,7 @@ static void prep(const Engine *e, const Track *t, TC *c)
     c->gl = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
     c->gr = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
     c->send = clampf(tp[P_FX_SEND], 0.f, 1.f);
+    c->vsend = clampf(tp[P_VERB_SEND], 0.f, 1.f);
 }
 
 /* where a locked track plays: the take keeps its place in the bar */
@@ -653,7 +664,9 @@ void eng_render(Engine *e, float *out, int frames)
     e->fill_avg += ((float)fill - e->fill_avg) * 0.02f;
     double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
-    float mix[BLK * 2], snd[BLK * 2], inb[BLK * 2];
+    float mix[BLK * 2], snd[BLK * 2], vb[BLK * 2], inb[BLK * 2];
+    int vtype = p[P_VERB_TYPE] > 0.5f;
+    float vk = verb_k(p), vlev = p[P_VERB_LEVEL];
     TC tc[CD_TRACKS];
     int done = 0;
     while (done < frames) {
@@ -680,7 +693,7 @@ void eng_render(Engine *e, float *out, int frames)
             if (m > inmax) inmax = m;
             inb[2 * i] = il; inb[2 * i + 1] = ir;
 
-            float ml = 0, mr = 0, sl = 0, sr = 0;
+            float ml = 0, mr = 0, sl = 0, sr = 0, vl = 0, vr = 0;
             for (int k = 0; k < CD_TRACKS; k++) {
                 Track *t = &e->trk[k];
                 TC *c = &tc[k];
@@ -725,6 +738,7 @@ void eng_render(Engine *e, float *out, int frames)
                 t->gl += (c->gl - t->gl) * 0.004f;
                 t->gr += (c->gr - t->gr) * 0.004f;
                 t->gs += (c->send - t->gs) * 0.004f;
+                t->gv += (c->vsend - t->gv) * 0.004f;
 
                 if (t->play_g <= 0.f || c->L <= 0 || t->rec_state == ST_REC) { t->writing = 0; continue; }
                 int ls = c->ls, le = c->le, xf = c->xf, end = c->end, L = c->L;
@@ -793,10 +807,12 @@ void eng_render(Engine *e, float *out, int frames)
                 float ol = warm_clip(dl * t->play_g * t->gl, &t->dc[0]);
                 float orr = warm_clip(dr * t->play_g * t->gr, &t->dc[1]);
                 sl += ol * t->gs; sr += orr * t->gs;
+                vl += ol * t->gv; vr += orr * t->gv;   /* the reverb: a send of its own */
                 ml += ol * (1 - t->gs); mr += orr * (1 - t->gs);
             }
             mix[2 * i] = ml; mix[2 * i + 1] = mr;
             snd[2 * i] = sl; snd[2 * i + 1] = sr;
+            vb[2 * i] = vl; vb[2 * i + 1] = vr;
 
             if (tr->running) {
                 double ph0 = tr->phase;
@@ -805,7 +821,8 @@ void eng_render(Engine *e, float *out, int frames)
             } else tr->bar_edge = 0;
         }
         fx_block(&e->fx, p, tr->cyc, snd, n);
-        for (int i = 0; i < 2 * n; i++) mix[i] += snd[i];
+        bloom_process(&e->verb, vtype, vk, vb, vb, n);
+        for (int i = 0; i < 2 * n; i++) mix[i] += snd[i] + vb[i] * vlev;
         /* the input is heard through Conduit only as far as Input monitor
          * says, overdubbing or not: an interface that monitors its own input
          * would otherwise be heard twice, the second copy late */
@@ -1020,10 +1037,12 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
         m->gr[k] = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
         m->mute[k] = tp[P_MUTE] > 0.5f;
         m->send[k] = clampf(tp[P_FX_SEND], 0.f, 1.f);
+        m->vsend[k] = clampf(tp[P_VERB_SEND], 0.f, 1.f);
     }
     double frames = q ? q / 4.0 * cyc : longest;
     if (frames > max_frames) frames = max_frames;
     if (frames < 1 || fx_init(&m->fx)) { m->frames = 0; return 0; }
+    if (bloom_init(&m->verb, 1.024)) { fx_free(&m->fx); m->frames = 0; return 0; }
     fx_reset(&m->fx, m->p);
     m->frames = (int)(frames + 0.5);
     /* one pass first, thrown away, so the delay's tail wraps round seamlessly */
@@ -1040,11 +1059,13 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
 
 void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n)
 {
-    float snd[BLK * 2];
+    float snd[BLK * 2], vb[BLK * 2];
+    int vtype = m->p[P_VERB_TYPE] > 0.5f;
+    float vk = verb_k(m->p), vlev = m->p[P_VERB_LEVEL];
     for (int done = 0; done < n; done += BLK) {
         int b = n - done < BLK ? n - done : BLK;
         float *mx = mix + 2 * done;
-        for (int i = 0; i < 2 * b; i++) { mx[i] = 0; snd[i] = 0; }
+        for (int i = 0; i < 2 * b; i++) { mx[i] = 0; snd[i] = 0; vb[i] = 0; }
         for (int k = 0; k < CD_TRACKS; k++) {
             float *sk = stems && stems[k] ? stems[k] + 2 * done : NULL;
             if (sk) memset(sk, 0, sizeof(float) * 2 * b);
@@ -1052,7 +1073,7 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
             const Track *t = &e->trk[k];
             int ls = m->ls[k], le = m->le[k], xf = m->xf[k], L = le - xf - ls;
             double pp = m->pos[k];
-            float sd = m->send[k];
+            float sd = m->send[k], vs = m->vsend[k];
             for (int i = 0; i < b; i++) {
                 float l, r;
                 pp = wrap(pp, ls, L);
@@ -1063,14 +1084,16 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
                 if (!m->mute[k]) {
                     mx[2 * i] += l * (1 - sd); mx[2 * i + 1] += r * (1 - sd);
                     snd[2 * i] += l * sd; snd[2 * i + 1] += r * sd;
+                    vb[2 * i] += l * vs; vb[2 * i + 1] += r * vs;
                 }
             }
             m->pos[k] = wrap(pp, ls, L);
         }
         fx_block(&m->fx, m->p, m->cyc, snd, b);
-        for (int i = 0; i < 2 * b; i++) mx[i] = clampf((mx[i] + snd[i]) * m->p[P_MASTER], -1.f, 1.f);
+        bloom_process(&m->verb, vtype, vk, vb, vb, b);
+        for (int i = 0; i < 2 * b; i++) mx[i] = clampf((mx[i] + snd[i] + vb[i] * vlev) * m->p[P_MASTER], -1.f, 1.f);
     }
     m->done += n;
 }
 
-void eng_mix_end(Mixdown *m) { fx_free(&m->fx); }
+void eng_mix_end(Mixdown *m) { fx_free(&m->fx); bloom_free(&m->verb); }

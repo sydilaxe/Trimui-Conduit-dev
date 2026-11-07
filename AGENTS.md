@@ -3,8 +3,9 @@
 Conduit is a four-track USB-audio looper / sampler for the TrimUI Brick, Brick Hammer and Brick Pro running
 TrimUI OS, MustardOS or KNULLI (Allwinner A133P: four Cortex-A53 cores, 1 GB, a 1024x768 screen).
 It records from any capture device SDL sees (USB interfaces first, followed on hot-plug) into four
-tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs and runs a master FX
-chain, maps every control to MIDI, and saves the mix and each track as WAVs to the SD card. C on SDL2
+tracks kept in sync by the first loop or USB MIDI clock, pans, pitches, overdubs, runs a master FX
+chain and a Bloom reverb send (src/bloom.c, after the MidiVerb II), maps every control to MIDI, and
+saves the mix and each track as WAVs to the SD card. C on SDL2
 only; MIDI is read from the kernel's raw devices (`/dev/snd/midiC*D*`), with no extra libraries.
 
 The build follows the other TrimUI apps (sydilaxe/Trimui-RadioScan-dev, Trimui-Columbiastreet-dev):

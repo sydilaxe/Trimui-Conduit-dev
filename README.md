@@ -20,7 +20,7 @@ extra libraries.
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
 - **Four tracks:** each up to 120 s, with its own length, volume, pan, mute,
-  FX send, pitch, window, overdub, decay and 16 levels of undo.
+  FX send, reverb send, pitch, window, overdub, decay and 16 levels of undo.
 - **Sync:** the first loop sets the bar, or follow **MIDI clock** from a USB
   MIDI device (Start, Stop, Continue, tempo changes). Synced takes are whole
   bars (or ½, ¼ bar), start on the next bar line (switchable) and stop on one.
@@ -39,6 +39,9 @@ extra libraries.
   (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 bar, ping-pong, damped
   feedback). Each track's **FX send** decides how much of it goes through:
   all (the default), none (dry) or a blend.
+- **Bloom reverb:** a separate send to a long, swelling stereo reverb after
+  the Alesis MidiVerb II's *Bloom* programs (45 and 49), with its own type,
+  time and level.
 - **Save to SD:** the mix (with FX) and every track as its own file, from
   bar 1 and as long as the tracks take to come round together, so they line
   up in a DAW. 16-bit PCM or 32-bit float WAV, fsync'd so a power-off right
@@ -70,6 +73,7 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | SELECT + L2 | Mute / unmute the selected track |
 | SELECT + R2 | Play / stop all tracks |
 | SELECT + ↑ | FX send on / off for the selected track (back on at the amount it had) |
+| SELECT + ↓ | Reverb send on / off for the selected track (back on at the amount it had, 50% the first time) |
 | MENU | Quit |
 
 On a device or USB gamepad with analog sticks:
@@ -118,6 +122,30 @@ tracks are dry.
 **TRACK → Window start / end** pick the part of the track that loops. Moving
 the window while it plays jumps with a short crossfade, so scrubbing doesn't
 click; on a synced track the window keeps its place in the bar.
+
+### Reverb
+
+**TRACK → Reverb send** sends the track to the Bloom reverb, on its own:
+it's a second send, separate from the FX send, so a track can go through
+the FX, the reverb, both or neither. It's 0% (off) by default; SELECT + ↓
+switches it on and off. The reverb is set on the FX tab:
+
+- **Reverb:** *Bloom 1* (MidiVerb II program 45, "Bloom 1 8 Sec") or
+  *Bloom 2* (program 49, "Bloom 2 7 Sec": the same with an 85 ms
+  pre-delay). Instead of starting dense, the sound swells over about half a
+  second as it passes through a long chain of diffusers, then rings out.
+- **Reverb time:** 1 to 30 s (8 s, as the unit, by default).
+- **Reverb level:** how loud the reverb comes back into the mix.
+
+Like the unit it takes the sends in mono and returns them in wide stereo,
+and it runs at half the sample rate (24 kHz; the MidiVerb II ran at
+23.4 kHz), which keeps its darker top end. The saved mix includes it; the
+saved tracks are dry.
+
+The signal flow and delay times come from thement's analysis of the
+MidiVerb II in [midiverb_emulator](https://github.com/thement/midiverb_emulator).
+Conduit's reverb is its own floating-point implementation and shares no
+code with that project.
 
 ### MIDI
 
@@ -263,6 +291,7 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 src/main.c          UI, input (buttons, sticks, MIDI map), devices, save/load, self-test
 src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock), overdub/undo, FX, mixdown
 src/midi.c          USB MIDI in: raw ALSA devices, parser, reader thread
+src/bloom.c         the Bloom reverb (after the MidiVerb II's Bloom programs)
 src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
 Apps/Conduit/       the app folder: launch.sh, config.json, icon, conduit_diag.sh
@@ -274,7 +303,9 @@ tests/              unit tests and the end-to-end script
 ```
 
 Inspired by [GrainBrick](https://github.com/ETRNLIAM/GrainBrick). Conduit
-shares no code with it.
+shares no code with it. The Bloom reverb follows the MidiVerb II analysis in
+[midiverb_emulator](https://github.com/thement/midiverb_emulator) (it shares
+no code with it either).
 
 ## License
 
