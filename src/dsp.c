@@ -27,7 +27,7 @@ void eng_default_track(float *tp)
     memset(tp, 0, sizeof(float) * P_TRACK_N);
     tp[P_LOOP_START] = 0.f; tp[P_LOOP_END] = 1.f;
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
-    tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_SYNC] = SYNC_ON;
+    tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_SYNC] = SYNC_ON;
 }
 
 void eng_default_params(float *p)
@@ -159,6 +159,7 @@ int eng_init(Engine *e, int max_seconds)
         t->buf = calloc((size_t)t->cap * 2, sizeof(float));
         if (!t->buf) { eng_free(e); return -1; }
         eng_default_track(t->p);
+        t->gs = t->p[P_FX_SEND];
         t->last_od = -1;
     }
     if (fx_init(&e->fx)) { eng_free(e); return -1; }
@@ -444,6 +445,7 @@ typedef struct {
     int rev, lock, gate;
     float keep; int decay_always;
     float gl, gr;              /* output gain targets */
+    float send;                /* FX send target */
 } TC;
 
 static void prep(const Engine *e, const Track *t, TC *c)
@@ -470,6 +472,7 @@ static void prep(const Engine *e, const Track *t, TC *c)
     double a = (clampf(tp[P_PAN], -1.f, 1.f) + 1.0) * M_PI / 4;
     c->gl = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
     c->gr = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
+    c->send = clampf(tp[P_FX_SEND], 0.f, 1.f);
 }
 
 /* where a locked track plays: the take keeps its place in the bar */
@@ -631,7 +634,7 @@ void eng_render(Engine *e, float *out, int frames)
     e->fill_avg += ((float)fill - e->fill_avg) * 0.02f;
     double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
-    float mix[BLK * 2], inb[BLK * 2];
+    float mix[BLK * 2], snd[BLK * 2], inb[BLK * 2];
     TC tc[CD_TRACKS];
     int done = 0;
     while (done < frames) {
@@ -658,7 +661,7 @@ void eng_render(Engine *e, float *out, int frames)
             if (m > inmax) inmax = m;
             inb[2 * i] = il; inb[2 * i + 1] = ir;
 
-            float ml = 0, mr = 0;
+            float ml = 0, mr = 0, sl = 0, sr = 0;
             for (int k = 0; k < CD_TRACKS; k++) {
                 Track *t = &e->trk[k];
                 TC *c = &tc[k];
@@ -702,6 +705,7 @@ void eng_render(Engine *e, float *out, int frames)
                 if (t->clear_pending && t->play_g <= 0.f) { do_clear(t); prep(e, t, c); }
                 t->gl += (c->gl - t->gl) * 0.004f;
                 t->gr += (c->gr - t->gr) * 0.004f;
+                t->gs += (c->send - t->gs) * 0.004f;
 
                 if (t->play_g <= 0.f || c->L <= 0 || t->rec_state == ST_REC) { t->writing = 0; continue; }
                 int ls = c->ls, le = c->le, xf = c->xf, end = c->end, L = c->L;
@@ -765,10 +769,14 @@ void eng_render(Engine *e, float *out, int frames)
                     t->xpos += c->speed; t->xleft--;
                 }
                 if (!c->lock) t->pos = wrap(t->pos + c->speed, ls, L);
-                ml += dl * t->play_g * t->gl;
-                mr += dr * t->play_g * t->gr;
+                /* the FX send splits the track: that much goes through the
+                 * master FX, the rest past it (dry) */
+                float ol = dl * t->play_g * t->gl, orr = dr * t->play_g * t->gr;
+                sl += ol * t->gs; sr += orr * t->gs;
+                ml += ol * (1 - t->gs); mr += orr * (1 - t->gs);
             }
             mix[2 * i] = ml; mix[2 * i + 1] = mr;
+            snd[2 * i] = sl; snd[2 * i + 1] = sr;
 
             if (tr->running) {
                 double ph0 = tr->phase;
@@ -776,7 +784,8 @@ void eng_render(Engine *e, float *out, int frames)
                 tr->bar_edge = floor(tr->phase) > floor(ph0);
             } else tr->bar_edge = 0;
         }
-        fx_block(&e->fx, p, tr->cyc, mix, n);
+        fx_block(&e->fx, p, tr->cyc, snd, n);
+        for (int i = 0; i < 2 * n; i++) mix[i] += snd[i];
         /* the input is heard through Conduit only as far as Input monitor
          * says, overdubbing or not: an interface that monitors its own input
          * would otherwise be heard twice, the second copy late */
@@ -990,6 +999,7 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
         m->gl[k] = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
         m->gr[k] = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
         m->mute[k] = tp[P_MUTE] > 0.5f;
+        m->send[k] = clampf(tp[P_FX_SEND], 0.f, 1.f);
     }
     double frames = q ? q / 4.0 * cyc : longest;
     if (frames > max_frames) frames = max_frames;
@@ -1010,29 +1020,36 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
 
 void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], int n)
 {
-    for (int i = 0; i < 2 * n; i++) mix[i] = 0;
-    for (int k = 0; k < CD_TRACKS; k++) {
-        if (stems && stems[k]) memset(stems[k], 0, sizeof(float) * 2 * n);
-        if (!m->on[k]) continue;
-        const Track *t = &e->trk[k];
-        int ls = m->ls[k], le = m->le[k], xf = m->xf[k], L = le - xf - ls;
-        double pp = m->pos[k];
-        for (int i = 0; i < n; i++) {
-            float l, r;
-            pp = wrap(pp, ls, L);
-            loop_at(t->buf, ls, le, xf, pp, &l, &r);
-            pp += m->speed[k];
-            l *= m->gl[k]; r *= m->gr[k];
-            if (stems && stems[k]) { stems[k][2 * i] = l; stems[k][2 * i + 1] = r; }
-            if (!m->mute[k]) { mix[2 * i] += l; mix[2 * i + 1] += r; }
-        }
-        m->pos[k] = wrap(pp, ls, L);
-    }
+    float snd[BLK * 2];
     for (int done = 0; done < n; done += BLK) {
         int b = n - done < BLK ? n - done : BLK;
-        fx_block(&m->fx, m->p, m->cyc, mix + 2 * done, b);
+        float *mx = mix + 2 * done;
+        for (int i = 0; i < 2 * b; i++) { mx[i] = 0; snd[i] = 0; }
+        for (int k = 0; k < CD_TRACKS; k++) {
+            float *sk = stems && stems[k] ? stems[k] + 2 * done : NULL;
+            if (sk) memset(sk, 0, sizeof(float) * 2 * b);
+            if (!m->on[k]) continue;
+            const Track *t = &e->trk[k];
+            int ls = m->ls[k], le = m->le[k], xf = m->xf[k], L = le - xf - ls;
+            double pp = m->pos[k];
+            float sd = m->send[k];
+            for (int i = 0; i < b; i++) {
+                float l, r;
+                pp = wrap(pp, ls, L);
+                loop_at(t->buf, ls, le, xf, pp, &l, &r);
+                pp += m->speed[k];
+                l *= m->gl[k]; r *= m->gr[k];
+                if (sk) { sk[2 * i] = l; sk[2 * i + 1] = r; }
+                if (!m->mute[k]) {
+                    mx[2 * i] += l * (1 - sd); mx[2 * i + 1] += r * (1 - sd);
+                    snd[2 * i] += l * sd; snd[2 * i + 1] += r * sd;
+                }
+            }
+            m->pos[k] = wrap(pp, ls, L);
+        }
+        fx_block(&m->fx, m->p, m->cyc, snd, b);
+        for (int i = 0; i < 2 * b; i++) mx[i] = clampf((mx[i] + snd[i]) * m->p[P_MASTER], -1.f, 1.f);
     }
-    for (int i = 0; i < 2 * n; i++) mix[i] = clampf(mix[i] * m->p[P_MASTER], -1.f, 1.f);
     m->done += n;
 }
 

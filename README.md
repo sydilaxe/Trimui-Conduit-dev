@@ -20,7 +20,7 @@ extra libraries.
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
 - **Four tracks:** each up to 120 s, with its own length, volume, pan, mute,
-  pitch, window, overdub, decay and 16 levels of undo.
+  FX send, pitch, window, overdub, decay and 16 levels of undo.
 - **Sync:** the first loop sets the bar, or follow **MIDI clock** from a USB
   MIDI device (Start, Stop, Continue, tempo changes). Synced takes are whole
   bars (or ½, ¼ bar), start on the next bar line (switchable) and stop on one.
@@ -37,7 +37,8 @@ extra libraries.
   overdubbing or always), and click-free seams, jumps, starts and stops.
 - **Master FX:** drive → sample-rate reducer → bit crusher → resonant SVF
   (LP/HP/BP) → delay (free ms or synced to 1/16 … 1 bar, ping-pong, damped
-  feedback).
+  feedback). Each track's **FX send** decides how much of it goes through:
+  all (the default), none (dry) or a blend.
 - **Save to SD:** the mix (with FX) and every track as its own file, from
   bar 1 and as long as the tracks take to come round together, so they line
   up in a DAW. 16-bit PCM or 32-bit float WAV, fsync'd so a power-off right
@@ -68,6 +69,7 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | SELECT + X | Erase the selected track (press twice) |
 | SELECT + L2 | Mute / unmute the selected track |
 | SELECT + R2 | Play / stop all tracks |
+| SELECT + ↑ | FX send on / off for the selected track (back on at the amount it had) |
 | MENU | Quit |
 
 On a device or USB gamepad with analog sticks:
@@ -99,6 +101,14 @@ your other gear, trim **SYNC → Clock offset**.
 A synced track pitched away from 0 plays free (it's faster or slower); set
 it back to 0 and it rejoins the beat. A *Free* track is any length and runs
 in its own time.
+
+**TRACK → FX send** sets how much of the track goes through the master FX
+(FX tab): *100%* (the default) is all of it, *Off* keeps it dry, past the
+FX, and anything between is a blend of the two. SELECT + ↑ switches it off
+and back on at the amount it had; on the MIDI tab, *FX send on/off* (or
+*Track N FX send on/off*) does the same from a pad, and *Track N FX send*
+sets the amount from a knob. The saved mix follows the sends; the saved
+tracks are dry.
 
 **TRACK → Window start / end** pick the part of the track that loops. Moving
 the window while it plays jumps with a short crossfade, so scrubbing doesn't

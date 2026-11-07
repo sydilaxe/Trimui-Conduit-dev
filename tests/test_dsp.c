@@ -666,6 +666,44 @@ static void test_midi_parse(void)
     T(got[6].type == MM_CC && got[6].ch == 1 && got[6].num == 10 && got[6].val == 127, "MIDI: song position skipped, channel 2 CC");
 }
 
+/* FX send: 0 keeps a track dry (past the FX), 1 puts it all through, and
+ * between them it's a blend; the mixdown does the same */
+static void test_fx_send(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = 24000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 3000, 0.5f);
+    eng_set_buffer(e, 0, st, n);
+    e->p[P_FILT_MODE] = 1; e->p[P_CUTOFF] = 0.1f; e->p[P_RESO] = 0;   /* low-pass ~40 Hz: kills 3 kHz */
+    eng_play_toggle(e, 0);
+    float pk, lev[3];
+    float sends[3] = { 1.f, 0.f, 0.5f };
+    for (int k = 0; k < 3; k++) {
+        e->trk[0].p[P_FX_SEND] = sends[k];
+        run_silence(e, 8192, &pk);
+        run_silence(e, 8192, &pk);
+        lev[k] = pk;
+    }
+    char msg[160];
+    snprintf(msg, sizeof msg, "FX send 100%%: through the low-pass (%.3f); off: dry (%.3f); 50%%: half (%.3f)", lev[0], lev[1], lev[2]);
+    T(lev[0] < 0.02f && fabsf(lev[1] - 0.45f) < 0.01f && fabsf(lev[2] - 0.225f) < 0.02f, msg);
+    int m; float *b;
+    e->trk[0].p[P_FX_SEND] = 0;
+    b = bounce(e, &m);
+    float top = 0; for (int i = 0; b && i < 2 * m; i++) top = fmaxf(top, fabsf(b[i]));
+    free(b);
+    e->trk[0].p[P_FX_SEND] = 1;
+    b = bounce(e, &m);
+    float top1 = 0; for (int i = 0; b && i < 2 * m; i++) top1 = fmaxf(top1, fabsf(b[i]));
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix follows the send too (dry %.3f, through the FX %.3f)", top, top1);
+    T(fabsf(top - 0.45f) < 0.01f && top1 < 0.02f, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
 int main(void)
 {
     test_rate_mismatch();
@@ -853,6 +891,7 @@ int main(void)
     test_mixdown();
     test_midi_clock();
     test_midi_parse();
+    test_fx_send();
 
     printf(fails ? "\n%d FAILED\n" : "\nall tests passed\n", fails);
     return fails != 0;

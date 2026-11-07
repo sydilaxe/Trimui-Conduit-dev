@@ -14,7 +14,7 @@
 typedef enum {
     /* per track (Track.p) */
     P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_DECAY, P_DECAY_MODE,
-    P_VOLUME, P_PAN, P_MUTE, P_SYNC,
+    P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_SYNC,
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
@@ -89,6 +89,7 @@ typedef struct {
     double od_comp;            /* overdub write offset, fixed when writing starts */
     float play_g;              /* play / stop fade */
     float gl, gr;              /* smoothed output gains (volume, pan, mute) */
+    float gs;                  /* smoothed FX send */
     double xpos; int xleft;    /* jump crossfade: the old playhead, fading out */
     int snap;                  /* next locked frame jumps without a crossfade */
     int clear_pending;         /* erase once the fade-out ends */
@@ -195,7 +196,7 @@ typedef struct {
     float p[P_COUNT], tp[CD_TRACKS][P_TRACK_N];
     double pos[CD_TRACKS], speed[CD_TRACKS], cyc;
     int on[CD_TRACKS], ls[CD_TRACKS], le[CD_TRACKS], xf[CD_TRACKS];
-    float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS];
+    float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS];
     FxState fx;
 } Mixdown;
 int  eng_mix_begin(Engine *e, Mixdown *m, int max_frames);  /* frames, 0 if there's nothing */

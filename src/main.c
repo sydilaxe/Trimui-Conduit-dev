@@ -39,7 +39,7 @@
 
 /* ------------------------------------------------------------ params */
 
-enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN, K_DECAY, K_PAN };
+enum { K_PCT, K_LOOPPOS, K_ST, K_CENTS, K_ENUM, K_DB, K_MS, K_INT, K_GAIN, K_DECAY, K_PAN, K_SEND };
 typedef struct {
     const char *name; float min, max, step, coarse; int kind; const char *const *labels;
 } ParamDesc;
@@ -64,6 +64,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_VOLUME]     = { "Volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_PAN]        = { "Pan", -1, 1, 0.05f, 0.25f, K_PAN, 0 },
     [P_MUTE]       = { "Mute", 0, 1, 1, 1, K_ENUM, L_ONOFF },
+    [P_FX_SEND]    = { "FX send", 0, 1, 0.05f, 0.25f, K_SEND, 0 },
     [P_SYNC]       = { "Length", 0, 1, 1, 1, K_ENUM, L_LEN },
     [P_MASTER]     = { "Master volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MONITOR]    = { "Input monitor", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
@@ -93,7 +94,7 @@ static const ParamDesc PD[P_COUNT] = {
 static const char *const PKEY[P_COUNT] = {
     [P_LOOP_START] = "win_start", [P_LOOP_END] = "win_end", [P_PITCH] = "pitch", [P_FINE] = "fine",
     [P_REVERSE] = "reverse", [P_DECAY] = "loop_decay", [P_DECAY_MODE] = "decay_mode", [P_VOLUME] = "volume",
-    [P_PAN] = "pan", [P_MUTE] = "mute", [P_SYNC] = "length", [P_MASTER] = "master", [P_MONITOR] = "monitor",
+    [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_SYNC] = "length", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
     [P_BITS] = "bits", [P_DOWNS] = "downsample", [P_DLY_SYNC] = "delay_sync", [P_DLY_TIME] = "delay_time",
     [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong",
@@ -107,7 +108,7 @@ enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TE
 enum { PG_TRACK, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "FX", "SYNC", "IO", "MIDI", "FILES" };
 static const int PAGE_ROWS[PG_N][16] = {
-    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
+    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
     { P_FILT_MODE, P_CUTOFF, P_RESO, P_DRIVE, P_BITS, P_DOWNS, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_DLY_MIX, P_PINGPONG, ROW_END },
     { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
     { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
@@ -125,7 +126,7 @@ static const char *const ACT_KEY[A_N] = { "up", "down", "left", "right", "a", "b
 
 /* things a button or a MIDI note / CC can do */
 enum { ACT_REC, ACT_PLAY, ACT_DUB, ACT_ERASE, ACT_UNDO, ACT_REVERSE, ACT_MUTE, ACT_NEXT, ACT_PREV,
-       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL };
+       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX };
 /* the live controls (analog sticks, or mapped knobs) */
 enum { LIVE_WPOS, LIVE_WSIZE, LIVE_BEND, LIVE_DIR };
 
@@ -146,6 +147,7 @@ typedef struct {
     int in_failed, out_block;
     int b_erased;                           /* B held: the loop was erased */
     int sel;                                /* selected track */
+    float send_mem[CD_TRACKS];              /* the FX send to go back to when it's switched on again */
     int trig_used[A_N];                     /* L2/R2 used as a fine / coarse modifier while held */
 
     int page, sel_row[PG_N], scroll[PG_N];
@@ -268,6 +270,7 @@ static void build_targets(void)
         { ACT_REC, "rec", "Record / stop" }, { ACT_PLAY, "play", "Play / stop" },
         { ACT_DUB, "overdub", "Overdub" }, { ACT_ERASE, "erase", "Erase" }, { ACT_UNDO, "undo", "Undo" },
         { ACT_REVERSE, "reverse_toggle", "Reverse on/off" }, { ACT_MUTE, "mute_toggle", "Mute on/off" },
+        { ACT_FX, "fx_toggle", "FX send on/off" },
         { ACT_NEXT, "next_track", "Next track" }, { ACT_PREV, "prev_track", "Previous track" },
         { ACT_PLAY_ALL, "play_all", "Play / stop all tracks" },
         { ACT_SAVE_ALL, "save_all", "Save mix + tracks" }, { ACT_SAVE_TRACK, "save_track", "Save track" },
@@ -290,6 +293,8 @@ static void build_targets(void)
         snprintf(k, sizeof k, "t%d_mute_toggle", t + 1); add_target(MT_ACT, ACT_MUTE, t, k, "Track %d mute on/off", t + 1);
         snprintf(k, sizeof k, "t%d_volume", t + 1); add_target(MT_PARAM, P_VOLUME, t, k, "Track %d volume", t + 1);
         snprintf(k, sizeof k, "t%d_pan", t + 1); add_target(MT_PARAM, P_PAN, t, k, "Track %d pan", t + 1);
+        snprintf(k, sizeof k, "t%d_fx_toggle", t + 1); add_target(MT_ACT, ACT_FX, t, k, "Track %d FX send on/off", t + 1);
+        snprintf(k, sizeof k, "t%d_fx_send", t + 1); add_target(MT_PARAM, P_FX_SEND, t, k, "Track %d FX send", t + 1);
     }
     for (int id = 0; id < P_TRACK_N; id++) add_target(MT_PARAM, id, -1, PKEY[id], "Track: %s", PD[id].name);
     for (int id = P_TRACK_N; id < P_COUNT; id++) add_target(MT_PARAM, id, -1, PKEY[id], "%s", PD[id].name);
@@ -310,7 +315,7 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 
 static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
                                P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS };
-static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_SYNC };
+static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_SYNC };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
 
@@ -653,6 +658,11 @@ static void do_action(int act, int k)
     case ACT_SAVE_TRACK: save_track(k); break;
     case ACT_RESAMPLE: resample(k); break;
     case ACT_PLAY_ALL: play_all(); break;
+    case ACT_FX:
+        if (t->p[P_FX_SEND] > 0.f) { G.send_mem[k] = t->p[P_FX_SEND]; t->p[P_FX_SEND] = 0.f; }
+        else t->p[P_FX_SEND] = G.send_mem[k] > 0.f ? G.send_mem[k] : 1.f;
+        toast(0, "Track %d FX send %s", k + 1, t->p[P_FX_SEND] > 0.f ? "on" : "off (dry)");
+        break;
     }
 }
 
@@ -709,6 +719,7 @@ static void midi_apply(int i, const MidiMsg *m)
         if (m->type == MM_NOTE || m->type == MM_NOTE_OFF) {
             /* a pad steps through a switch's values */
             if (rise && d->kind == K_ENUM) *dst = (float)(((int)*dst + 1) % ((int)d->max + 1));
+            else if (rise && g->id == P_FX_SEND) do_action(ACT_FX, k);   /* a pad switches the send */
         } else {
             float x = d->min + v * (d->max - d->min);
             if (d->kind == K_ENUM || d->kind == K_INT) x = floorf(x + 0.5f);
@@ -852,6 +863,7 @@ static void press(int a)
         case A_A: save_track(G.sel); break;
         case A_L2: G.trig_used[A_L2] = 1; do_action(ACT_MUTE, G.sel); break;
         case A_R2: G.trig_used[A_R2] = 1; play_all(); break;
+        case A_UP: do_action(ACT_FX, G.sel); break;
         case A_MENU: G.running = 0; break;
         case A_L1: case A_R1:
             if (G.held[A_L1] && G.held[A_R1]) G.running = 0;
@@ -934,7 +946,7 @@ static void repeat_tick(void)
         do_action(ACT_ERASE, G.sel);
     }
     for (int a = A_UP; a <= A_RIGHT; a++)
-        if (G.held[a] && now >= G.next_rep[a]) {
+        if (G.held[a] && !G.held[A_SEL] && now >= G.next_rep[a]) {
             press(a);
             G.next_rep[a] = now + (now - G.held_since[a] > 1500 ? 25 : 65);
         }
@@ -1143,6 +1155,11 @@ static void value_str(int id, char *o, size_t sz)
     switch (d->kind) {
     case K_ENUM: snprintf(o, sz, "%s", d->labels[(int)v]); break;
     case K_PCT: snprintf(o, sz, "%.0f%%", v * 100); break;
+    case K_SEND:
+        if (v < 0.005f) snprintf(o, sz, "Off  (dry, past the FX)");
+        else if (v > 0.995f) snprintf(o, sz, "100%%  (all through the FX)");
+        else snprintf(o, sz, "%.0f%%  (the rest dry)", v * 100);
+        break;
     case K_PAN:
         if (fabsf(v) < 0.005f) snprintf(o, sz, "Center");
         else snprintf(o, sz, "%s %.0f", v < 0 ? "Left" : "Right", fabsf(v) * 100);
@@ -1231,8 +1248,11 @@ static void draw_lane(int k)
             char pn[16];
             if (fabsf(pan) < 0.005f) snprintf(pn, sizeof pn, "C");
             else snprintf(pn, sizeof pn, "%c%.0f", pan < 0 ? 'L' : 'R', fabsf(pan) * 100);
-            snprintf(info, sizeof info, "%s%s  %s%s  vol %.0f%%  %s", len, eng_track_synced(&G.eng, k) ? "" : " free",
-                     t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", t->p[P_VOLUME] * 100, pn);
+            char fx[16] = "";
+            if (t->p[P_FX_SEND] < 0.005f) snprintf(fx, sizeof fx, "dry  ");
+            else if (t->p[P_FX_SEND] < 0.995f) snprintf(fx, sizeof fx, "fx %.0f%%  ", t->p[P_FX_SEND] * 100);
+            snprintf(info, sizeof info, "%s%s  %s%s%svol %.0f%%  %s", len, eng_track_synced(&G.eng, k) ? "" : " free",
+                     t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", fx, t->p[P_VOLUME] * 100, pn);
         }
         int iw = (int)(strlen(info) * FONT_CW * 0.75f);
         fill(LANE_X + LANE_W - 10 - iw, y + 1, iw + 10, (int)(FONT_CH * 0.75f) + 2, C_BG, 190);
@@ -1362,7 +1382,7 @@ static void draw(void)
     fill(0, 728, SW, 40, C_PANEL, 255);
     const char *hint = G.page == PG_FILES ? "A load into track   Y delete   B play   L2/R2 track   L1/R1 tab"
         : G.page == PG_MIDI ? "A learn (move a knob / hit a pad)   Y unmap   B cancel   L1/R1 tab"
-        : G.held[A_SEL] ? "SELECT +  START save all  A save track  B undo  X erase  Y resample  L2 mute  R2 all"
+        : G.held[A_SEL] ? "SELECT+ START all  A track  B undo  X erase  Y resample  L2 mute  R2 play all  UP fx"
                         : "A rec  B play (hold: erase)  X dub  Y rev  L2/R2 track  START save  hold SELECT";
     text(16, 736, C_DIM, 0.9f, hint);
 
@@ -1541,6 +1561,7 @@ int main(int argc, char **argv)
 
     if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
     build_targets();
+    for (int k = 0; k < CD_TRACKS; k++) G.send_mem[k] = 1.f;
     load_cfg();
 
     SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
