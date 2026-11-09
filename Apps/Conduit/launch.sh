@@ -1,6 +1,6 @@
 #!/bin/sh
-# Conduit launcher for the TrimUI Brick, Brick Hammer and Brick Pro: TrimUI OS runs it directly,
-# MustardOS through mux_launch.sh.
+# Conduit launcher for the TrimUI Brick, Brick Hammer and Brick Pro under MustardOS,
+# run through mux_launch.sh.
 # All four cores stay online, at full speed, while it runs.
 cd "$(dirname "$0")"
 

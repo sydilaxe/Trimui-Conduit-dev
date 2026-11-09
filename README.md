@@ -5,9 +5,8 @@ and **Brick Pro**. Record loops from a USB audio interface (or the internal mic)
 into four tracks, keep them in time with each other or with **MIDI clock over
 USB**, pan and mix them, bend them with pitch, a scrubbed loop window, filter,
 crush and delay, overdub layers, map every control to MIDI, and save the mix
-and each track as WAVs on the MicroSD card. Written in C on SDL2 only, so it
-runs on **TrimUI OS**, **MustardOS (muOS)** and **KNULLI** without Python or
-extra libraries.
+and each track as WAVs on the MicroSD card. Written in C on SDL2 only, and
+built for **MustardOS (muOS)**, without Python or extra libraries.
 
 **Latest release:** [v0.1.0](../../releases/tag/v0.1.0) · [all releases](../../releases)
 
@@ -283,28 +282,17 @@ shows the last raw button number pressed.
 
 ## Install
 
-Each release has one package per firmware, all with the same binary:
-
-| TrimUI OS | MustardOS | KNULLI |
-| --- | --- | --- |
-| `Conduit-trimui.zip` | `Conduit-mustardos.muxapp` | `Conduit-knulli.zip` |
-
-Download it from the latest [release](../../releases), from the artifacts of the latest
+Conduit is built only for MustardOS. Each release has one package, `Conduit-mustardos.muxapp`, for
+the Brick, Brick Hammer and Brick Pro. Download it from the latest [release](../../releases), from the artifacts of the latest
 run on the Actions tab, or build it (see below).
 
-**TrimUI OS:** unzip `Conduit-trimui.zip` at the root of the SD card, so the app lands in
-`SD:/Apps/Conduit`, then launch **Conduit** from Apps.
-
-**MustardOS:** copy `Conduit-mustardos.muxapp` into the `ARCHIVE` folder at the root of the
+Copy `Conduit-mustardos.muxapp` into the `ARCHIVE` folder at the root of the
 first SD card, install it from **Applications → Archive Manager**, then launch **Conduit**
 from Applications. By hand instead: unzip it and copy its `Conduit/` folder into
 `MUOS/application/`.
 
-**KNULLI:** unzip `Conduit-knulli.zip` into `/userdata/roms/ports/` (it holds `Conduit.sh`
-and `conduit/`), refresh PORTS, then launch **Conduit**.
-
 With the card mounted on a computer you can also run `make install SD=/path/to/card`
-(add `OS=mustardos` or `OS=knulli`).
+(it copies the app into `MUOS/application/Conduit`).
 
 Recordings go to `recordings/` inside the app folder (on the MicroSD card).
 To change this, set `CONDUIT_REC_DIR` in the launcher.
@@ -336,7 +324,7 @@ make desktop      # a build for this computer -> build/desktop/conduit
 make test         # engine + WAV unit tests (ASan/UBSan)
 make test-e2e     # the desktop build, run headless on SDL's disk audio driver,
                   #   with a FIFO standing in for a USB MIDI device
-make package      # build/Conduit-trimui.zip, Conduit-mustardos.muxapp, Conduit-knulli.zip
+make package      # build/Conduit-mustardos.muxapp
 make version      # the version built (CONDUIT_VERSION in src/main.c, or VERSION=x.y.z)
 ```
 
@@ -369,7 +357,6 @@ src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
 Apps/Conduit/       the app folder: launch.sh, config.json, icon, conduit_diag.sh
 mustardos/          MustardOS: mux_launch.sh, wake_screen.sh, the list glyph
-knulli/Conduit.sh   KNULLI PORTS launcher
 third_party/        SDL2 headers for the cross build
 tools/              mksdlstub.py (link stub), genfont.py, mkicon.py
 tests/              unit tests and the end-to-end script
