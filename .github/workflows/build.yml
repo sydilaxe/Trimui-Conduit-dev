@@ -54,7 +54,7 @@ jobs:
           # the app folder in "Conduit/", with mux_launch.sh, wake_screen.sh and the list glyph
           m=build/Conduit-mustardos.muxapp
           ls -l $m
-          for f in conduit launch.sh config.json icon.png mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt; do
+          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt; do
             unzip -l $m | grep -q "Conduit/$f$" || { echo "::error::$m has no $f"; exit 1; }
           done
           test "$(unzip -p $m Conduit/VERSION)" = "$v"

@@ -359,10 +359,19 @@ static float clamp_param(int id, float x) { const ParamDesc *d = &PD[id]; return
 
 static void load_cfg(void)
 {
-    /* defaults for the TrimUI "Player1" evdev joystick when SDL has no
-     * GameController mapping; override with joy_<action>= in conduit.cfg */
-    static const int def[A_N] = { -1, -1, -1, -1, 1, 0, 3, 2, 4, 5, -1, -1, 6, 7, 8 };
-    memcpy(G.joy_map, def, sizeof def);
+    /* defaults for MustardOS's "muOS-Keys" joystick when SDL has no
+     * GameController mapping, numbered as in MustardOS's device/tui-brick*
+     * maps (the Brick Pro's one higher, the board MustardOS names telling
+     * them apart); override with joy_<action>= in conduit.cfg */
+    static const int brick[A_N] = { -1, -1, -1, -1, 5, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+    static const int brickpro[A_N] = { -1, -1, -1, -1, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    char board[64] = "";
+    FILE *bf = fopen("/opt/muos/device/config/board/name", "r");
+    if (bf) {
+        if (!fgets(board, sizeof board, bf)) board[0] = 0;
+        fclose(bf);
+    }
+    memcpy(G.joy_map, strstr(board, "pro") ? brickpro : brick, sizeof brick);
     FILE *f = fopen(G.cfg_path, "r");
     if (!f) return;
     char line[512];
@@ -1082,8 +1091,6 @@ static void handle_event(SDL_Event *e)
         if (G.have_gc) break;
         if (e->jaxis.axis == 0) { set_held(A_LEFT, e->jaxis.value < -16000); set_held(A_RIGHT, e->jaxis.value > 16000); }
         if (e->jaxis.axis == 1) { set_held(A_UP, e->jaxis.value < -16000); set_held(A_DOWN, e->jaxis.value > 16000); }
-        if (e->jaxis.axis == 2) set_held(A_L2, e->jaxis.value > 0);
-        if (e->jaxis.axis == 5) set_held(A_R2, e->jaxis.value > 0);
         break;
     case SDL_AUDIODEVICEADDED:
         if (e->adevice.iscapture && !G.in_name[0]) {

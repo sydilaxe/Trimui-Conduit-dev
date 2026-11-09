@@ -277,7 +277,8 @@ selected track's window, raw.
 
 If A and B feel swapped on your firmware, set `swap_ab=1` in `conduit.cfg`.
 Without an SDL controller mapping, Conduit falls back to raw joystick
-buttons. Set them with `joy_a=`, `joy_b=`, and so on. **IO → Diagnostics**
+buttons, numbered as MustardOS's Brick or Brick Pro controller. Set them with
+`joy_a=`, `joy_b=`, and so on. **IO → Diagnostics**
 shows the last raw button number pressed.
 
 ## Install
@@ -355,10 +356,10 @@ src/midiverb2.c     MidiVerb II programs 45 and 49, exact (from midiverb_emulato
 src/bloom.c         the adjustable Bloom (the same design in floating point)
 src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
-Apps/Conduit/       the app folder: launch.sh, config.json, icon, conduit_diag.sh
+Apps/Conduit/       the app folder: launch.sh, conduit_diag.sh
 mustardos/          MustardOS: mux_launch.sh, wake_screen.sh, the list glyph
 third_party/        SDL2 headers for the cross build
-tools/              mksdlstub.py (link stub), genfont.py, mkicon.py
+tools/              mksdlstub.py (link stub), genfont.py
 tests/              unit tests and the end-to-end script
 ```
 
