@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw Apps/Conduit/icon.png, the 128x128 TrimUI OS app icon: a waveform in a loop.
+"""Draw Apps/Conduit/icon.png, the 128x128 app icon: a waveform in a loop.
 
 usage: mkicon.py OUT.png
 """

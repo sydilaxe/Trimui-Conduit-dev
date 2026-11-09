@@ -18,8 +18,8 @@ env:
   RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
 
 jobs:
-  trimui:
-    name: TrimUI packages (Brick, Brick Hammer, Brick Pro; TrimUI OS, MustardOS and KNULLI)
+  mustardos:
+    name: MustardOS package (Brick, Brick Hammer, Brick Pro)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,16 +40,9 @@ jobs:
           pip install ziglang==0.14.1
           # the scripts the device runs: the launchers, the screen wake, the USB report
           for s in Apps/Conduit/launch.sh Apps/Conduit/conduit_diag.sh mustardos/*.sh; do sh -n "$s"; done
-          bash -n knulli/Conduit.sh
           make -j"$(nproc)" package "$@"
           v=$(make -s version "$@")
           echo "built version $v"
-          z=build/Conduit-trimui.zip
-          ls -l $z
-          for f in conduit launch.sh config.json icon.png conduit_diag.sh recordings/README.txt; do
-            unzip -l $z | grep -q "Apps/Conduit/$f$" || { echo "::error::$z has no $f"; exit 1; }
-          done
-          test "$(unzip -p $z Apps/Conduit/VERSION)" = "$v"
           file build/trimui/conduit | grep -q "ARM aarch64"
           strings build/trimui/conduit | grep -qx "Conduit $v"
           # runs on the firmware's own SDL2, and needs nothing newer than glibc 2.28
@@ -58,10 +51,10 @@ jobs:
           if objdump -T build/trimui/conduit | grep -o "GLIBC_[0-9.]*" | sort -uV | awk -F'[_.]' '$2 > 2 || ($2 == 2 && $3 > 28)' | grep .; then
             echo "::error::the binary needs a glibc newer than 2.28"; exit 1
           fi
-          # MustardOS: the same app folder in "Conduit/", with mux_launch.sh, wake_screen.sh and the list glyph
+          # the app folder in "Conduit/", with mux_launch.sh, wake_screen.sh and the list glyph
           m=build/Conduit-mustardos.muxapp
           ls -l $m
-          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh; do
+          for f in conduit launch.sh config.json icon.png mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt; do
             unzip -l $m | grep -q "Conduit/$f$" || { echo "::error::$m has no $f"; exit 1; }
           done
           test "$(unzip -p $m Conduit/VERSION)" = "$v"
@@ -69,23 +62,11 @@ jobs:
           # MustardOS's Archive Manager refuses absolute and .. paths, and anything not a file or folder
           if unzip -Z1 $m | grep -Eq '^/|(^|/)\.\.(/|$)|\\'; then echo "::error::$m has unsafe paths"; exit 1; fi
           if unzip -Zl $m | grep -Eq '^[bclps]'; then echo "::error::$m has links or devices"; exit 1; fi
-          # mux_launch.sh belongs to the MustardOS package only
-          if unzip -l $z | grep -q mux_launch.sh; then echo "::error::$z has mux_launch.sh"; exit 1; fi
-          # KNULLI: Conduit.sh and conduit/ for /userdata/roms/ports
-          k=build/Conduit-knulli.zip
-          ls -l $k
-          for f in Conduit.sh conduit/conduit conduit/conduit_diag.sh; do
-            unzip -l $k | grep -q " $f$" || { echo "::error::$k has no $f"; exit 1; }
-          done
-          test "$(unzip -p $k conduit/VERSION)" = "$v"
-          unzip -p $k conduit/conduit | cmp -s - build/trimui/conduit
       - uses: actions/upload-artifact@v4
         with:
-          name: Conduit-trimui
+          name: Conduit-mustardos
           path: |
-            build/Conduit-trimui.zip
             build/Conduit-mustardos.muxapp
-            build/Conduit-knulli.zip
 
   test:
     name: Engine tests + desktop end-to-end (host)
@@ -107,7 +88,7 @@ jobs:
     name: Publish release
     # runs for: a pushed v* tag, a release created on the website, or a manual run with a tag filled in
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || inputs.release_tag != ''
-    needs: [trimui, test]
+    needs: [mustardos, test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,23 +96,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: Conduit-trimui
+          name: Conduit-mustardos
       - name: Check the packages were built as this version
         run: |
           # a manual run's tag may leave out the v
           TAG=v${RELEASE_TAG#v}
           echo "TAG=$TAG" >> "$GITHUB_ENV"
-          test "$(unzip -p Conduit-trimui.zip Apps/Conduit/VERSION)" = "${TAG#v}" ||
-            { echo "::error::Conduit-trimui.zip isn't version ${TAG#v}"; exit 1; }
           test "$(unzip -p Conduit-mustardos.muxapp Conduit/VERSION)" = "${TAG#v}" ||
             { echo "::error::Conduit-mustardos.muxapp isn't version ${TAG#v}"; exit 1; }
-          test "$(unzip -p Conduit-knulli.zip conduit/VERSION)" = "${TAG#v}" ||
-            { echo "::error::Conduit-knulli.zip isn't version ${TAG#v}"; exit 1; }
-      - name: Create the GitHub release with the TrimUI OS, MustardOS and KNULLI packages
+      - name: Create the GitHub release with the MustardOS package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          files="Conduit-trimui.zip Conduit-mustardos.muxapp Conduit-knulli.zip"
+          files="Conduit-mustardos.muxapp"
           api="repos/$GITHUB_REPOSITORY/releases"
           # the release for this tag, a draft left by an earlier run included
           id=$(gh api "$api" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
