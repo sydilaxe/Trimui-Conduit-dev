@@ -17,6 +17,9 @@ typedef enum {
     /* per track (Track.p) */
     P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_DECAY, P_DECAY_MODE,
     P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_VERB_SEND, P_SYNC,
+    /* scatter: the loop in slices on the beat, played in a pattern */
+    P_SC_MODE, P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR,
+    P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_EVOLVE,
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
@@ -29,6 +32,13 @@ typedef enum {
     P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
+    /* the live input through the effects */
+    P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
+    /* master scatter: the whole mix (after the FX, before the live input),
+     * its settings as a track's P_SC_* (same order) */
+    P_MSC_MODE, P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_VAR,
+    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_EVOLVE,
+    P_MSC_FB, P_MSC_FREEZE,    /* the master's own: its output fed back, and held */
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
     P_COUNT
@@ -41,6 +51,34 @@ enum { SYNC_ON = 0, SYNC_FREE = 1 };       /* P_SYNC */
  * else the first loop */
 enum { CLOCK_INTERNAL = 0, CLOCK_MIDI = 1, CLOCK_AUTO = 2 };
 enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start / Stop / Continue */
+/* P_IN_PRINT: takes are the input as it comes (its effects only heard), or
+ * the input through its effects (printed into the loop) */
+enum { IN_PRINT_DRY = 0, IN_PRINT_WET = 1 };
+/* P_SC_MODE: what the pattern does to the steps it picks (Chop: only they
+ * sound) */
+enum { SC_OFF, SC_SHUFFLE, SC_STUTTER, SC_REVERSE, SC_CHOP, SC_SCATTER, SC_GRAIN, SC_N };
+/* P_SC_TRIG: which steps it picks: by chance (Amount), or a Euclidean
+ * rhythm (Hits spread evenly over Steps, 0: a bar of them, turned by Rotate) */
+enum { SC_TRIG_RANDOM, SC_TRIG_EUCLID };
+/* P_SC_DIV: the slice (a step) as a note value, from a bar to a 64th, with
+ * triplets and dotted ones; P_SC_BARS: the random choices repeat after 1,
+ * 2, 4 or 8 bars */
+enum { SC_SZ_BAR, SC_SZ_2, SC_SZ_4, SC_SZ_4T, SC_SZ_8D, SC_SZ_8, SC_SZ_8T, SC_SZ_16D, SC_SZ_16, SC_SZ_16T,
+       SC_SZ_32, SC_SZ_64, SC_SIZES };
+
+/* a track's scatter player: where it is in the pattern and what it last read */
+typedef struct {
+    int active;                /* it played the last frame */
+    int step;                  /* slice the playhead is in */
+    long pass;                 /* times round the loop */
+    double last;               /* where it read the last frame */
+    double xpos; int xleft;    /* a jump: where it was, fading out */
+    float env;                 /* the gate */
+    /* the last step's decision (it holds for the whole step) and what it was for */
+    long cg; int cn, cvalid;
+    float ctp[P_SC_EVOLVE - P_SC_MODE + 1];
+    int c_hit, c_slice, c_rev, c_rep, c_mute; double c_where;
+} Scatter;
 
 /* Undo: up to CD_UNDO_LEVELS steps per track, newest last. An overdub keeps a
  * copy of the take as it was before; an erase keeps only the take's length
@@ -69,6 +107,7 @@ typedef struct {
 typedef struct {
     float p[P_TRACK_N];        /* written by UI thread, read by audio thread */
     volatile float bend;       /* live pitch bend in semitones (stick / MIDI), not saved */
+    volatile float xy;         /* the X/Y mixer's gain 0..1 (1: off), on top of the volume, not saved */
 
     float *buf;                /* stereo interleaved sample memory */
     int cap;                   /* capacity in frames */
@@ -108,6 +147,10 @@ typedef struct {
     int clear_pending;         /* erase once the fade-out ends */
     volatile int decay_armed;  /* Decay: Always may degrade the loop (the UI saved an undo step first) */
     int writing;               /* the loop was written last frame (overdub or decay) */
+    Scatter sc;                /* audio thread */
+    volatile int sc_pos_i;     /* where scatter reads (-1: off), for the UI */
+    volatile int sc_step_i;    /* ... the step it's in, and times round the loop */
+    volatile long sc_pass_i;
 } Track;
 
 /* the transport: bars since the start. Internal: the first synced loop is
@@ -138,6 +181,18 @@ typedef struct {
     double snap_t, snap_phase, snap_rate;
     int snap_beats, snap_run, snap_follow;
 } Transport;
+
+/* master scatter: the mix as it was, the last 21 s, and its player. The
+ * steps it doesn't change play the mix as it is; the ones it changes play
+ * from the bar before (or, a repeat, from the start of their own step). */
+#define MSC_RING (1 << 20)
+typedef struct {
+    float *ring;               /* stereo, MSC_RING frames, indexed by frame count: what it cuts up */
+    float *yring;              /* ... and what came out (fed back a bar later) */
+    Scatter s;
+    volatile int pos_ago;      /* frames back it reads now (0: the mix as it is, -1: off), for the UI */
+    volatile long g;           /* the step now (since the transport started) */
+} MScat;
 
 #define CD_EVQ 1024
 typedef struct { uint8_t msg; double t, pos, bpm; } ClockEv; /* pos, bpm: a link position (msg 0xF0 / 0xF1) */
@@ -178,6 +233,13 @@ typedef struct {
     volatile float in_peak, out_peak;
     FxState fx;
     Verb verb;
+    /* the live input's sends: smoothed FX and reverb send, and its own FX
+     * and reverb (the same settings) for when they're printed into takes */
+    float in_gs, in_gv;
+    int in_print;              /* the print mode the input chain last ran in */
+    FxState fx_in;
+    Verb verb_in;
+    MScat msc;
 } Engine;
 
 int  eng_init(Engine *e, int max_seconds);   /* per track */
@@ -220,6 +282,24 @@ void eng_set_buffer(Engine *e, int t, const float *st, int frames); /* [lock] */
  * already taken off le) */
 void eng_loop_range(const Engine *e, int t, int *ls, int *le);
 double eng_rate(const float *tp, float bend);
+/* scatter: the steps in a loop window L frames long (bar: the take's frames
+ * per bar, 0 if it has none: the window is a bar), the steps in a bar, the
+ * Euclidean cycle, and what the pattern does at step index g (passes *
+ * steps + step): picked or not, which slice (or for Grain where, 0..1),
+ * backwards, how many repeats, muted */
+int  sc_steps(const float *tp, int L, double bar, int beats);
+int  sc_bar_steps(const float *tp, int beats);      /* rounded */
+double sc_bar_stepsf(const float *tp, int beats);   /* exact: a dotted 8th is 5 1/3 a bar of 4 */
+int  sc_cycle(const float *tp, int beats);
+void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
+               int *hit, int *slice, double *where, int *rev, int *rep, int *mute);
+/* the master scatter's settings from the global params, as a track's (tp[P_SC_*]) */
+void msc_params(const float *p, float *tp);
+/* [lock] the master scatter's output as heard: the last whole patterns (up
+ * to max_frames, at most 8 bars) up to the last bar line, into st; frames,
+ * 0 if there's no bar or not that much yet */
+int  eng_msc_capture(Engine *e, float *st, int max_frames);
+#define MSC_TRACK CD_TRACKS    /* its "track" number in sc_decide */
 int  eng_track_synced(const Engine *e, int t);   /* plays in sync now */
 
 /* Offline mixdown from bar 1: the mix (through the master FX) and each
@@ -232,6 +312,9 @@ typedef struct {
     double pos[CD_TRACKS], speed[CD_TRACKS], cyc;
     int on[CD_TRACKS], ls[CD_TRACKS], le[CD_TRACKS], xf[CD_TRACKS];
     float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS], vsend[CD_TRACKS], dc[CD_TRACKS][2];
+    Scatter sc[CD_TRACKS];
+    MScat msc;                 /* ring only while master scatter is on */
+    uint64_t msc_f;            /* frames through it, the thrown-away first pass included */
     FxState fx;
     Verb verb;
 } Mixdown;

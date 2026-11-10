@@ -18,6 +18,15 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Input:** any capture device SDL sees. USB devices are picked
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
+- **Scatter and SEQ:** cut a track's loop into slices on the beat (from a
+  bar to a 64th, with triplets and dotted values) and play them in a pattern: a Euclidean rhythm (or
+  chance) picks steps to shuffle, stutter, reverse, chop or turn into
+  grains, per track or over the whole mix. The SEQ tab shows the steps like a
+  step sequencer. It
+  follows the bar, so it stays with MIDI clock and linked Bricks.
+- **Live input through the effects:** send what you're playing to the Bloom
+  reverb and the FX as you play, to hear them live, and choose whether takes
+  record it dry or with the effects printed in.
 - **Four tracks:** each up to 120 s, with its own length, volume, pan, mute,
   FX send, reverb send, pitch, window, overdub, decay and 16 levels of undo.
 - **Sync:** the first loop sets the bar, or follow **MIDI clock** from a USB
@@ -33,6 +42,9 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Loop window and analog sticks:** play a window of a track and scrub it
   along with the left stick; bend the pitch and flip the direction with the
   right one (or with MIDI knobs).
+- **X/Y mix:** SELECT + → turns the sticks into a vector mixer for the four
+  tracks, one in each corner of a pad: glide between them with the left
+  stick, throw the mix with the right one.
 - **Looper:** pitch ±24 semitones plus fine tune (tape-style varispeed),
   reverse, overdub (in time, unlimited layers), adjustable loop decay (while
   overdubbing or always), and click-free seams, jumps, starts and stops.
@@ -64,9 +76,9 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | Y | Reverse. FILES: delete (press twice). MIDI: unmap |
 | L2 / R2 (tap) | Previous / next track |
 | START | Save the mix + every track |
-| D-pad ↑↓ | Select setting |
+| D-pad ↑↓ | Select setting: down a column, then on to the top of the next |
 | D-pad ←→ | Change value (hold **L2** for fine, **R2** for coarse) |
-| L1 / R1 | Switch tab: TRACK · EFFECTS · SYNC · IO · MIDI · FILES |
+| L1 / R1 | Switch tab: TRACK · SEQ · EFFECTS · SYNC · IO · MIDI · FILES |
 | SELECT + A | Save the selected track's window (raw) |
 | SELECT + Y | Resample: print the mix (with FX) into the selected track; the tracks in it are muted |
 | SELECT + B | Undo on the selected track: the last overdub, then the one before (up to 16), or an erase |
@@ -75,6 +87,10 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | SELECT + R2 | Play / stop all tracks |
 | SELECT + ↑ | FX send on / off for the selected track (back on at the amount it had) |
 | SELECT + ↓ | Reverb send on / off for the selected track (back on at the amount it had, 50% the first time) |
+| SELECT + → | X/Y mix on / off: the sticks mix the four tracks (below) |
+| SELECT + ← | Centre the X/Y mix |
+| SELECT + L1 | Scatter on / off for the selected track (back to the mode it had; *Scatter* the first time) |
+| SELECT + R1 | Scatter: the next variation (another pattern) |
 | MENU | Quit |
 
 On a device or USB gamepad with analog sticks:
@@ -85,6 +101,25 @@ On a device or USB gamepad with analog sticks:
 | Left ↑ / ↓ (flick) | Double / halve the window |
 | Right ↑↓ | Bend the pitch up to ±12 semitones; springs back when let go |
 | Right ← / → (flick) | Reverse / forward |
+
+With **X/Y mix** on (SELECT + →, `X/Y MIX` and a small pad in the top right),
+the sticks mix the four tracks instead, one in each corner of a square:
+**1** top left, **2** top right, **3** bottom left, **4** bottom right.
+
+| Stick | Action |
+|---|---|
+| Left | Move the mix point (further = faster); it stays where you leave it |
+| Right | Throw the mix from there (the full pad); springs back when let go |
+
+In the middle every track plays at its own volume; towards a corner the
+nearest track stays at its volume and the others fade (on an edge, the two
+tracks on it stay up). A thin bar in each track's number box and *xy* in its
+info show the gain. The mix sits on top of each track's volume, mute and pan,
+and what you save or resample is the mix as you hear it (each track's file
+too). SELECT + ← puts the point back in the middle; SELECT + → again gives
+the sticks back to the window and bend, and every track its full volume. With
+MIDI, map *X/Y mix: left - right* and *top - bottom* to two knobs (moving
+either turns the X/Y mix on) and *X/Y mix on/off* to a pad.
 
 ### Tracks and sync
 
@@ -158,8 +193,19 @@ click; on a synced track the window keeps its place in the bar.
 
 ### Effects
 
-The **EFFECTS** tab holds everything after the tracks, in three sections
-(↑↓ steps past the headings):
+Every tab fits on one screen: the four track lanes on top, the tabs, and the
+tab's settings below in titled columns, as sliders, switches and side-by-side
+choices (two short settings often share a row). ↑↓ walk down a column and on
+into the next, ←→ change the selected one. A setting that does nothing as
+things are set (Amount when the steps are Euclidean, the delay's Time when
+it's synced) is greyed out. Names and values are short in the cells (*Fdbk*,
+*1/8T*, *L60*); the footer shows the selected setting in full. The IN / OUT
+meters are the thin bars at the top right, and the lanes take whatever room
+the settings leave, so they are biggest on TRACK. MIDI and FILES are lists
+that scroll. (`CONDUIT_GRID=0` brings back the old one-row-per-setting
+lists.)
+
+The **EFFECTS** tab holds everything after the tracks, in five columns:
 
 - **Drive · crush · filter** and **Delay** are the master FX chain that each
   track's **FX send** feeds. The delay has *Mix*, *Sync* (free ms, or 1/16 …
@@ -169,6 +215,146 @@ The **EFFECTS** tab holds everything after the tracks, in three sections
   *Saturation* (repeats that get grittier as they go round).
 - **Reverb** is fed by each track's **Reverb send**, a send of its own (see
   below).
+
+### Scatter and the SEQ tab
+
+Scatter cuts a track's loop window into slices and plays them in a pattern,
+like a DJ's scatter effect, or granular playback with long grains. Its
+settings are on the **SEQ** tab, for the selected track (L2/R2 picks
+another). On that tab each track's lane shows the steps of the bar it's
+playing, as on a step sequencer:
+
+- Each step shows the audio it plays: the track's own under the steps the
+  pattern leaves (lined up with the loop), or the slice it puts there,
+  repeated, reversed or cut short by the gate as you'll hear it.
+- The steps the pattern picks are lit (yellow), the others plain, and a
+  silent step is black. The white bars mark the step playing now, the white
+  line where the playhead is in it, and the ticks on top mark the beats.
+- A lit step's tag (top left) shows what it does: a number is the slice it plays instead,
+  `x4` repeats it 4 times, `<` plays it backwards, `~` is a grain.
+- The top line shows the mode, how steps are picked, the slice size and the
+  variation.
+
+The slices are steps of the bar. **Slice size** is a note value: 1 bar, 1/2,
+1/4 (a beat), 1/8, 1/16, 1/32 or 1/64, the triplets (1/4, 1/8 and 1/16
+triplet) and the dotted values (1/8 and 1/16 dotted). A 1-bar loop in 4/4 has
+16 slices at 1/16 and 12 at 1/8 triplets. Dotted slices don't fit a bar
+evenly (5⅓ dotted 8ths a bar), so they run across the bar lines and come
+back round with it every 3 bars. They follow the track's
+playhead, which follows the bar, so with **Sync to: MIDI clock** or a
+leading Brick the slices land on its beat at any tempo. A *Free* track's
+window counts as one bar.
+
+**Steps picked** chooses which steps the pattern changes:
+
+- **Euclidean** (the default): **Hits** steps out of every **Steps**, spread
+  as evenly as they go, starting on the first and turned later by
+  **Rotate**. *Steps* at 0 is a bar's worth (16 at 1/16 in 4/4); set it to
+  another number for a polyrhythm against the bar (5 of 13 runs on across
+  bar lines). 4 of 16 is four on the floor, 3 of 8 the tresillo, 5 of 16 a
+  bossa nova.
+- **Random:** each step is picked with the chance **Amount**.
+
+**Scatter** is what happens to the picked steps:
+
+- **Shuffle:** they play another slice of the loop.
+- **Stutter:** they repeat the start of their slice 2, 3, 4, 6 or 8 times
+  (now and then the slice before).
+- **Reverse:** they play backwards.
+- **Chop:** only they sound; the other steps are silent.
+- **Scatter (all of them):** any of the above, or silence.
+- **Grain:** they play from anywhere in the loop (not only slice starts),
+  some repeated 2 or 4 times, some backwards.
+
+Then:
+
+- **Gate:** how much of each slice (or repeat) sounds; lower is choppier.
+- **Pattern length:** the random choices (which slice, how many repeats,
+  and the steps themselves with *Random*) repeat after 1, 2, 4 or 8 bars.
+- **Evolve:** off, the pattern repeats exactly. Turned up, that share of
+  its steps get new random choices each time the pattern comes round, so
+  it keeps changing slowly (at 100% it is new every time). The Euclidean
+  hits stay put; what's done on them changes.
+- **Variation:** other random choices with the same settings (SELECT + R1
+  steps to the next). The same variation is always the same pattern.
+
+Jumps are crossfaded and the gate fades in 2 ms, so nothing clicks. Overdubs
+still go into the loop in order, and Scatter only changes what's heard. On the
+other tabs the lane shows the slices as ticks along its bottom and where
+Scatter reads as a yellow line. The saved mix and Resample include the
+pattern: the mix lasts whole patterns, and a resampled track has Scatter
+switched off because the pattern is already in it. Scatter's mode and
+Variation start Off and 0 each time; the rest is remembered per track. MIDI
+can map every setting, as well as *Scatter on/off* and *Scatter: next
+variation*.
+
+### Master scatter
+
+Scatter can also work on the **whole mix**, like a DJ mixer's: all four
+tracks with their FX and reverb, but not the live input. Its settings are the
+**MIX PATTERN** and **MIX SHAPE** columns on the SEQ tab. They are the same as a
+track's, and it can run on top of the tracks' own scatter. While the SEQ tab
+is open, a **MIX** strip under the four lanes
+shows its steps in the bar. With one of the master settings selected, SELECT + L1
+switches it on and off and SELECT + R1 steps to the next variation. MIDI has
+*Master scatter on/off* and *Master scatter: next variation*.
+
+The mix isn't a loop, so master scatter keeps the last 21 seconds of it and
+plays from there:
+
+- Steps it doesn't pick play the mix as it is.
+- A repeat (stutter) replays the start of its own step.
+- The other changes (another slice, backwards, a grain) play from the bar
+  before.
+
+It needs a bar to follow: a synced loop, MIDI clock or a leading Brick. Until
+the transport runs it passes the mix through ("WAITS").
+
+**Mosaics.** Two settings let the passes build on each other:
+
+- **Master feedback:** what it cuts up is the mix blended with its own output
+  from a bar before. Each pass slices the slices of the last one, so the
+  pattern builds up into a mosaic of the loops. Higher values keep more of
+  the mosaic and take in less of the fresh mix. With nothing picked it's a
+  one-bar echo that fades.
+- **Master freeze:** takes in no more of the mix and keeps working on what
+  it has. With nothing picked, the last bar repeats exactly. With steps
+  picked, and with Evolve, each pass cuts the frozen mosaic up again. Gated
+  and silent steps wear it away.
+
+Evolve on the master and the tracks keeps the choices moving pass to pass.
+MIDI has *Master scatter: freeze on/off*.
+
+The saved mix includes master scatter. **Resample** (SELECT + Y) with
+Feedback, Freeze or Evolve on takes the mosaic **as you heard it**: the last
+whole pattern (up to 8 bars) up to the bar line. It goes into the selected
+track as a synced loop; the other tracks are muted and the FX and master
+scatter are switched off, so you can keep going: scatter the mosaic again,
+feed it back, resample again. Without those three settings, Resample renders
+the mix afresh as before, and switches master scatter off afterwards.
+
+### The live input through the effects
+
+The input can go through the effects as you play, not only the loops. On
+the **IO** tab:
+
+- **Live reverb send:** how much of the input goes to the Bloom reverb.
+- **Live FX send:** how much goes through the drive, crush, filter and delay.
+  As with a track's FX send, that much is taken off the dry input (at 100%
+  you hear it only through the FX).
+- **Record live input:**
+  - *Dry (FX heard only)*, the default: you hear the input's reverb and FX,
+    but takes and overdubs record it dry. Turn up the track's own sends to
+    hear the effects on the loop.
+  - *With the live FX*: the input goes through its own copy of the FX and
+    the reverb (the same settings), and that is recorded: the reverb's swell
+    and tail are part of the loop. Leave the track's reverb send at 0% then,
+    or the loop gets the reverb twice.
+
+The input's effects are heard whatever **Input monitor** is set to: that sets
+only the dry input, so with an interface that monitors itself you can leave
+it at 0% and hear the dry signal from the interface and the reverb from
+Conduit. The saved mix and Resample hold only the loops, not the live input.
 
 ### Reverb
 
@@ -236,6 +422,8 @@ in from the interface, so layers stay in time pass after pass. You hear the
 new layer through Conduit once the loop comes back round. To hear your input
 as you play, use your interface's own (direct) monitoring, or turn up
 **IO → Input monitor** if it has none; with both you'd hear yourself twice.
+To hear the reverb or the FX on what you play, see
+[The live input through the effects](#the-live-input-through-the-effects).
 
 **TRACK → Loop decay** makes the loop a little quieter on every pass, like
 tape wearing out: older layers slowly fade, and stacking overdubs can't

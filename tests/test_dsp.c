@@ -875,6 +875,393 @@ static void test_fx_send(void)
     eng_free(e); free(e);
 }
 
+/* The live input through the reverb: heard with the monitor off, the take
+ * dry by default; with Record live input: With the live FX, the reverb is
+ * in the take (and heard once, not twice) */
+static void live_burst(Engine *e, float *tail_out, float *dry_out)
+{
+    float in[512 * 2], out[512 * 2];
+    double ph = 0;
+    *tail_out = 0; *dry_out = 0;
+    for (int b = 0; b < 60; b++) {          /* 0.25 s of 440 Hz, then 0.4 s of silence */
+        for (int i = 0; i < 512; i++) {
+            float s = b < 24 ? 0.4f * (float)sin(ph) : 0.f; ph += 2 * M_PI * 440 / CD_SR;
+            in[2 * i] = s; in[2 * i + 1] = s;
+        }
+        eng_push_input(e, in, 512);
+        eng_render(e, out, 512);
+        float pk = 0; for (int i = 0; i < 1024; i++) pk = fmaxf(pk, fabsf(out[i]));
+        if (b >= 12 && b < 20 && pk > *dry_out) *dry_out = pk;
+        if (b >= 36 && pk > *tail_out) *tail_out = pk;
+    }
+}
+
+static void test_live_fx(void)
+{
+    char msg[200];
+    for (int mode = 0; mode < 2; mode++) {
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 4);
+        e->p[P_MONITOR] = 0;
+        e->p[P_IN_VERB_SEND] = 1.f;
+        e->p[P_IN_PRINT] = mode;
+        float pk, tail, during;
+        run_silence(e, 8192, &pk);          /* the FIFO primed */
+        eng_rec_button(e, 0);
+        live_burst(e, &tail, &during);
+        eng_rec_button(e, 0);
+        run_silence(e, 512, &pk);
+        Track *t = &e->trk[0];
+        /* the take after the burst: 0.35 s .. 0.6 s */
+        int a = (int)(0.35 * CD_SR), b = (int)(0.6 * CD_SR);
+        double take_tail = t->len > b ? rms(t->buf + 2 * a, b - a) : -1;
+        double take_burst = t->len > b ? rms(t->buf + 2 * (int)(0.05 * CD_SR), (int)(0.15 * CD_SR)) : -1;
+        if (mode == 0) {
+            snprintf(msg, sizeof msg, "live reverb heard with the monitor off (tail %.3f), the take dry (burst %.3f, after %.4f)",
+                     tail, take_burst, take_tail);
+            T(tail > 0.01f && take_burst > 0.2 && take_tail >= 0 && take_tail < 1e-4, msg);
+        } else {
+            snprintf(msg, sizeof msg, "live reverb printed: the take has the tail (%.4f) and the burst (%.3f); heard tail %.3f",
+                     take_tail, take_burst, tail);
+            T(tail > 0.01f && take_tail > 0.005 && take_burst > 0.2, msg);
+        }
+        eng_free(e); free(e);
+    }
+    /* the live FX send takes the input off the dry and through the master FX */
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    e->p[P_MONITOR] = 1.f; e->p[P_IN_FX_SEND] = 1.f;
+    e->p[P_FILT_MODE] = 1; e->p[P_CUTOFF] = 0.1f; e->p[P_RESO] = 0;   /* low-pass ~40 Hz */
+    float pk;
+    run_silence(e, 8192, &pk);
+    feed_sine(e, 3000, 0.5f, 16384);
+    float out[512 * 2], in[512 * 2]; double ph = 0; float top = 0;
+    for (int b = 0; b < 16; b++) {
+        for (int i = 0; i < 512; i++) { float s = 0.5f * (float)sin(ph); ph += 2 * M_PI * 3000 / CD_SR; in[2 * i] = s; in[2 * i + 1] = s; }
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        for (int i = 0; i < 1024; i++) top = fmaxf(top, fabsf(out[i]));
+    }
+    snprintf(msg, sizeof msg, "live FX send 100%%: the input only through the low-pass (%.3f)", top);
+    T(top < 0.05f, msg);
+    e->p[P_IN_FX_SEND] = 0.f;
+    feed_sine(e, 3000, 0.5f, 16384);
+    top = 0;
+    for (int b = 0; b < 16; b++) {
+        for (int i = 0; i < 512; i++) { float s = 0.5f * (float)sin(ph); ph += 2 * M_PI * 3000 / CD_SR; in[2 * i] = s; in[2 * i + 1] = s; }
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        for (int i = 0; i < 1024; i++) top = fmaxf(top, fabsf(out[i]));
+    }
+    snprintf(msg, sizeof msg, "live FX send off: the input heard dry at the monitor (%.3f)", top);
+    T(top > 0.4f, msg);
+    eng_free(e); free(e);
+}
+
+/* Scatter: slices on the beat of the bar, a pattern that repeats, and no
+ * clicks where it jumps or gates */
+static double play_bar(Engine *e, int frames, float *maxstep, double *energy)
+{
+    float in[512 * 2] = { 0 }, out[512 * 2], prev[2] = { 0, 0 };
+    *maxstep = 0; *energy = 0;
+    int first = 1;
+    for (int done = 0; done < frames; done += 512) {
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        if (first) { prev[0] = out[0]; prev[1] = out[1]; first = 0; }
+        float m = max_step(out, 512, prev); if (m > *maxstep) *maxstep = m;
+        for (int i = 0; i < 1024; i++) *energy += out[i] * out[i];
+    }
+    return *energy;
+}
+
+static void test_scatter(void)
+{
+    char msg[200];
+    float tp[P_TRACK_N]; eng_default_track(tp);
+    tp[P_SC_DIV] = SC_SZ_16;
+    T(sc_steps(tp, 48000, 48000, 4) == 16 && sc_steps(tp, 96000, 48000, 4) == 32 && sc_steps(tp, 30000, 0, 4) == 16
+      && sc_steps(tp, 12000, 48000, 4) == 4, "scatter: 16 slices a bar of 4 beats (2 bars 32, a quarter bar 4, no bar: the window)");
+    tp[P_SC_DIV] = SC_SZ_4;
+    T(sc_steps(tp, 48000, 48000, 3) == 3, "scatter: a beat a slice in 3/4");
+    tp[P_SC_DIV] = SC_SZ_BAR;
+    T(sc_steps(tp, 96000, 48000, 4) == 2 && sc_steps(tp, 30000, 0, 4) == 1, "scatter: a bar a slice");
+    tp[P_SC_DIV] = SC_SZ_2;
+    T(sc_steps(tp, 48000, 48000, 4) == 2, "scatter: half notes");
+    tp[P_SC_DIV] = SC_SZ_8T;
+    T(sc_steps(tp, 48000, 48000, 4) == 12 && sc_bar_steps(tp, 4) == 12, "scatter: 8th triplets, 12 a bar");
+    tp[P_SC_DIV] = SC_SZ_16D;    /* 3/64 of a bar: 64 of them in 3 bars */
+    T(sc_steps(tp, 144000, 48000, 4) == 32 && fabs(sc_bar_stepsf(tp, 4) - 32.0 / 3) < 1e-9, "scatter: dotted 16ths, 32 in 3 bars");
+    tp[P_SC_DIV] = SC_SZ_64;
+    T(sc_steps(tp, 48000, 48000, 4) == 64, "scatter: 64ths");
+    tp[P_SC_DIV] = SC_SZ_16;
+
+    /* random picks: the same each time round, Amount 0 leaves the loop as it is */
+    int same = 1, changed = 0, id = 1;
+    tp[P_SC_TRIG] = SC_TRIG_RANDOM;
+    for (int mode = SC_SHUFFLE; mode < SC_N; mode++) {
+        if (mode == SC_CHOP) continue;
+        tp[P_SC_MODE] = mode; tp[P_SC_AMOUNT] = 1.f; tp[P_SC_BARS] = 1;   /* 2 bars */
+        for (long g = 0; g < 64; g++) {
+            int h1, s1, r1, p1, m1, h2, s2, r2, p2, m2; double w1, w2;
+            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &h1, &s1, &w1, &r1, &p1, &m1);
+            sc_decide(tp, 1, g + 32, (int)(g % 16), 16, 4, &h2, &s2, &w2, &r2, &p2, &m2);
+            same &= h1 == h2 && s1 == s2 && w1 == w2 && r1 == r2 && p1 == p2 && m1 == m2;
+            changed |= s1 != (int)(g % 16) || w1 >= 0 || r1 || p1 > 1 || m1;
+        }
+        tp[P_SC_AMOUNT] = 0.f;
+        for (long g = 0; g < 64; g++) {
+            int h1, s1, r1, p1, m1; double w1;
+            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &h1, &s1, &w1, &r1, &p1, &m1);
+            id &= !h1 && s1 == (int)(g % 16) && w1 < 0 && !r1 && p1 == 1 && !m1;
+        }
+    }
+    T(same && changed && id, "scatter: every mode changes the loop, repeats with the pattern, Amount 0 plays it as it is");
+    /* Euclidean picks: Hits spread evenly over Steps, turned by Rotate, Chop sounds only them */
+    tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_MODE] = SC_CHOP; tp[P_SC_HITS] = 4; tp[P_SC_STEPS] = 0; tp[P_SC_ROT] = 0; tp[P_SC_BARS] = 0;
+    char row[64] = "";
+    for (long g = 0; g < 16; g++) {
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)g, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        row[g] = m1 ? '.' : 'x'; row[g + 1] = 0;
+    }
+    snprintf(msg, sizeof msg, "scatter Euclid 4 of 16, Chop: %s", row);
+    T(!strcmp(row, "x...x...x...x..."), msg);
+    tp[P_SC_HITS] = 3; tp[P_SC_STEPS] = 8; tp[P_SC_ROT] = 2;
+    for (long g = 0; g < 16; g++) {
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)g, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        row[g] = h ? 'x' : '.'; row[g + 1] = 0;
+    }
+    snprintf(msg, sizeof msg, "scatter Euclid 3 of 8, rotated 2: %s", row);
+    T(!strcmp(row, "x.x..x..x.x..x.."), msg);   /* x..x..x. turned 2 steps later */
+    tp[P_SC_HITS] = 5; tp[P_SC_STEPS] = 13; tp[P_SC_ROT] = 0;
+    int hits = 0;
+    for (long g = 0; g < 13 * 16; g++) {
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)(g % 16), 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        hits += h;
+    }
+    T(hits == 5 * 16, "scatter Euclid 5 of 13 runs on across the bar (a polyrhythm): 5 hits every 13 steps");
+    tp[P_SC_STEPS] = 0;
+
+    /* in the engine: a synced 1-bar loop of a sine */
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 4);
+    int n = 48000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 220, 0.4f);
+    eng_set_buffer(e, 0, st, n);
+    e->trk[0].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0);
+    float ms; double en0, en;
+    play_bar(e, 48128, &ms, &en0);
+    play_bar(e, 48128, &ms, &en0);
+    float ms0 = ms;
+    Track *t = &e->trk[0];
+    t->p[P_SC_MODE] = SC_SHUFFLE; t->p[P_SC_TRIG] = SC_TRIG_RANDOM; t->p[P_SC_AMOUNT] = 1.f;
+    play_bar(e, 4 * 48128, &ms, &en);
+    snprintf(msg, sizeof msg, "scatter Shuffle: jumps crossfaded, no clicks (largest step %.4f, the plain loop %.4f)", ms, ms0);
+    T(ms < 2.5f * ms0 && t->sc_pos_i >= 0, msg);
+    t->p[P_SC_MODE] = SC_STUTTER; t->p[P_SC_GATE] = 0.5f;
+    play_bar(e, 2 * 48128, &ms, &en);
+    snprintf(msg, sizeof msg, "scatter Stutter with a 50%% gate: no clicks (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0, msg);
+    t->p[P_SC_MODE] = SC_CHOP; t->p[P_SC_TRIG] = SC_TRIG_EUCLID; t->p[P_SC_HITS] = 4; t->p[P_SC_GATE] = 1.f;
+    play_bar(e, 48128, &ms, &en);
+    play_bar(e, 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "scatter Chop, Euclid 4 of 16: a quarter of the bar sounds (energy %.2f of the loop's)", en / en0);
+    T(fabs(en / en0 - 0.25) < 0.04 && ms < 2.5f * ms0, msg);
+    /* the steps sit on the bar: the bar's first 16th is the loop's first */
+    t->p[P_SC_MODE] = SC_OFF;
+    play_bar(e, 4096, &ms, &en);
+    snprintf(msg, sizeof msg, "scatter off: back to the loop without a click (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0 && t->sc_pos_i == -1, msg);
+    /* the saved mix plays the pattern too: 2-bar pattern, so 2 bars */
+    t->p[P_SC_MODE] = SC_CHOP; t->p[P_SC_BARS] = 1;
+    int m; float *b = bounce(e, &m);
+    double eb = 0; for (int i = 0; b && i < 2 * m; i++) eb += b[i] * b[i];
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix has the scatter pattern, whole (%d frames, energy %.2f of 2 loops)", m, eb / (2 * en0));
+    T(m == 96000 && fabs(eb / (2 * en0) - 0.25) < 0.05, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
+/* Master scatter: the whole mix in slices of the bar, from what was just
+ * heard; the saved mix has it too */
+static void test_master_scatter(void)
+{
+    char msg[200];
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 4);
+    int n = 48000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 220, 0.4f);
+    eng_set_buffer(e, 0, st, n);
+    fill_sine(st, n, 330, 0.2f);
+    eng_set_buffer(e, 1, st, n);
+    e->trk[0].p[P_FX_SEND] = 0; e->trk[1].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0); eng_play_toggle(e, 1);
+    float ms, ms0; double en0, en;
+    play_bar(e, 48128, &ms, &en0);
+    play_bar(e, 48000, &ms0, &en0);
+    e->p[P_MSC_MODE] = SC_SHUFFLE; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 1.f;
+    play_bar(e, 4 * 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter Shuffle: the mix in slices from the bar before, no clicks (largest step %.4f, plain %.4f), reading %d frames back",
+             ms, ms0, e->msc.pos_ago);
+    T(ms < 2.5f * ms0 && e->msc.pos_ago >= 0 && fabs(en / (4 * en0) - 1) < 0.1, msg);
+    e->p[P_MSC_MODE] = SC_CHOP; e->p[P_MSC_TRIG] = SC_TRIG_EUCLID; e->p[P_MSC_HITS] = 4;
+    play_bar(e, 48000, &ms, &en);
+    play_bar(e, 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter Chop 4 of 16: a quarter of the mix sounds (energy %.2f)", en / en0);
+    T(fabs(en / en0 - 0.25) < 0.04 && ms < 2.5f * ms0, msg);
+    /* the tracks' own scatter and the master's together */
+    e->trk[1].p[P_SC_MODE] = SC_STUTTER; e->trk[1].p[P_SC_TRIG] = SC_TRIG_RANDOM; e->trk[1].p[P_SC_AMOUNT] = 1.f;
+    play_bar(e, 2 * 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "a track's scatter under the master's: no clicks (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0, msg);
+    e->trk[1].p[P_SC_MODE] = SC_OFF;
+    int m; float *b = bounce(e, &m);
+    double eb = 0; for (int i = 0; b && i < 2 * m; i++) eb += b[i] * b[i];
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix has the master scatter (%d frames, energy %.2f of the mix)", m, eb / en0);
+    T(m == 48000 && fabs(eb / en0 - 0.25) < 0.05, msg);
+    e->p[P_MSC_MODE] = SC_OFF;
+    play_bar(e, 4096, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter off: the mix as it is, without a click (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0 && e->msc.pos_ago == -1, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
+/* Mosaics: Evolve changes a share of the pattern each time round; the
+ * master's Feedback cuts up its own output, Freeze keeps going on it */
+static double bar_out(Engine *e, float *keep, int frames)
+{
+    /* 480 frames at a time: a bar (48000) is exactly 100 of them */
+    float in[480 * 2] = { 0 }, out[480 * 2];
+    double en = 0;
+    for (int done = 0; done < frames; done += 480) {
+        eng_push_input(e, in, 480); eng_render(e, out, 480);
+        for (int i = 0; i < 960; i++) { en += out[i] * out[i]; if (keep && 2 * done + i < 2 * frames) keep[2 * done + i] = out[i]; }
+    }
+    return en;
+}
+
+static void test_mosaic(void)
+{
+    char msg[200];
+    /* Evolve */
+    float tp[P_TRACK_N]; eng_default_track(tp);
+    tp[P_SC_MODE] = SC_SHUFFLE; tp[P_SC_TRIG] = SC_TRIG_RANDOM; tp[P_SC_AMOUNT] = 1.f; tp[P_SC_BARS] = 0;
+    int ch[3] = { 0 }; float evs[3] = { 0.f, 0.25f, 1.f };
+    for (int k = 0; k < 3; k++) {
+        tp[P_SC_EVOLVE] = evs[k];
+        for (long gen = 1; gen <= 20; gen++)
+            for (int i = 0; i < 16; i++) {
+                int h, s1, r1, p1, m1, h2, s2, r2, p2, m2; double w1, w2;
+                sc_decide(tp, 0, (gen - 1) * 16 + i, i, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+                sc_decide(tp, 0, gen * 16 + i, i, 16, 4, &h2, &s2, &w2, &r2, &p2, &m2);
+                ch[k] += s1 != s2;
+            }
+    }
+    snprintf(msg, sizeof msg, "Evolve: steps changed from one round to the next: 0%% %d, 25%% %d, 100%% %d of 320", ch[0], ch[1], ch[2]);
+    T(ch[0] == 0 && ch[1] > 50 && ch[1] < 110 && ch[2] > 250, msg);
+
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 4);
+    int n = 48000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 220, 0.4f);
+    for (int i = 0; i < 24000; i++) { st[2 * i] *= 0.25f; st[2 * i + 1] *= 0.25f; }   /* a quiet half bar, then a loud one */
+    eng_set_buffer(e, 0, st, n);
+    e->trk[0].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0);
+    double en0 = bar_out(e, NULL, 48000); en0 = bar_out(e, NULL, 48000);
+    /* Feedback with nothing picked is a bar echo: stop the loop and it rings on, fading */
+    e->p[P_MSC_MODE] = SC_SHUFFLE; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 0.f; e->p[P_MSC_FB] = 0.5f;
+    bar_out(e, NULL, 4 * 48000);
+    e->trk[0].p[P_MUTE] = 1;
+    bar_out(e, NULL, 48000);
+    double e1 = bar_out(e, NULL, 48000), e2 = bar_out(e, NULL, 48000);
+    snprintf(msg, sizeof msg, "master Feedback 50%%: the mosaic rings on a bar at a time, halving (%.3f then %.3f of the mix)", e1 / en0, e2 / en0);
+    T(e1 > 0.01 * en0 && fabs(e2 / e1 - 0.25) < 0.05, msg);
+    /* Freeze: no more of the mix, the last bar held exactly */
+    e->trk[0].p[P_MUTE] = 0;
+    e->p[P_MSC_FB] = 0.f;
+    bar_out(e, NULL, 3 * 48000);
+    e->p[P_MSC_FREEZE] = 1;
+    bar_out(e, NULL, 48000);
+    e->trk[0].p[P_MUTE] = 1;
+    float *b1 = malloc(sizeof(float) * 2 * 48128), *b2 = malloc(sizeof(float) * 2 * 48128);
+    bar_out(e, NULL, 48000);
+    double f1 = bar_out(e, b1, 48000);
+    bar_out(e, b2, 48000);
+    float diff = 0; for (int i = 0; i < 2 * 47000; i++) diff = fmaxf(diff, fabsf(b1[i] - b2[i]));
+    snprintf(msg, sizeof msg, "master Freeze: the loop muted, the last bar goes on as it was (energy %.2f of the mix, bar to bar %.4f)", f1 / en0, diff);
+    T(fabs(f1 / en0 - 1) < 0.05 && diff < 0.02, msg);
+    /* Feedback and Freeze with the pattern cutting: it keeps changing and stays in bounds */
+    e->p[P_MSC_MODE] = SC_SCATTER; e->p[P_MSC_AMOUNT] = 1.f; e->p[P_MSC_EVOLVE] = 0.5f;
+    bar_out(e, b1, 48000);
+    bar_out(e, b2, 48000);
+    diff = 0; float top = 0;
+    for (int i = 0; i < 2 * 47000; i++) { diff = fmaxf(diff, fabsf(b1[i] - b2[i])); top = fmaxf(top, fabsf(b2[i])); }
+    e->p[P_MSC_FREEZE] = 0; e->p[P_MSC_FB] = 0.97f; e->trk[0].p[P_MUTE] = 0;
+    float pk; run_silence(e, 20 * 48000, &pk);
+    snprintf(msg, sizeof msg, "a frozen mosaic, cut up again: each bar differs (%.3f), feedback 97%% for 20 bars stays finite (peak %.3f)", diff, pk);
+    T(diff > 0.05f && top <= 1.f && isfinite(pk) && pk <= 1.f, msg);
+    /* Resample takes what was heard: the last bar up to the bar line */
+    e->p[P_MSC_FB] = 0.f; e->p[P_MSC_MODE] = SC_OFF; e->p[P_MSC_EVOLVE] = 0;
+    bar_out(e, NULL, 2 * 48000);
+    float *cap = malloc(sizeof(float) * 2 * 96000);
+    e->p[P_MSC_MODE] = SC_CHOP; e->p[P_MSC_TRIG] = SC_TRIG_EUCLID; e->p[P_MSC_HITS] = 4;
+    bar_out(e, NULL, 2 * 48000 + 480 * 20);
+    int nc = eng_msc_capture(e, cap, 96000);
+    double ec = 0; for (int i = 0; i < 2 * nc; i++) ec += cap[i] * cap[i];
+    snprintf(msg, sizeof msg, "the master scatter's output captured: a bar (%d frames), as heard (energy %.2f of the mix)", nc, ec / en0);
+    T(nc == 48000 && fabs(ec / en0 - 0.25) < 0.05, msg);
+    free(cap); free(b1); free(b2); free(st);
+    eng_free(e); free(e);
+}
+
+/* The X/Y mix's gain sits on top of the volume, in what's heard and in the
+ * saved mix, and fades rather than steps */
+static void test_xy_gain(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = 24000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 300, 0.5f);
+    eng_set_buffer(e, 0, st, n);
+    e->trk[0].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0);
+    float pk, lev[3], gains[3] = { 1.f, 0.5f, 0.f };
+    for (int k = 0; k < 3; k++) {
+        e->trk[0].xy = gains[k];
+        run_silence(e, 8192, &pk);
+        run_silence(e, 8192, &pk);
+        lev[k] = pk;
+    }
+    char msg[160];
+    snprintf(msg, sizeof msg, "X/Y gain 1: the volume (%.3f); 0.5: half (%.3f); 0: silent (%.4f)", lev[0], lev[1], lev[2]);
+    T(fabsf(lev[0] - 0.45f) < 0.01f && fabsf(lev[1] - 0.225f) < 0.01f && lev[2] < 1e-4f, msg);
+    /* a jump from 0 to 1 is smoothed: no step bigger than the sine's own */
+    float in[512 * 2] = { 0 }, out[512 * 2], prev[2] = { 0, 0 };
+    e->trk[0].xy = 1.f;
+    eng_push_input(e, in, 512); eng_render(e, out, 512);
+    float step = max_step(out, 512, prev);
+    snprintf(msg, sizeof msg, "X/Y gain changes fade in (largest step %.4f)", step);
+    T(step < 0.02f, msg);
+    int m; float *b;
+    e->trk[0].xy = 0.5f;
+    b = bounce(e, &m);
+    float top = 0; for (int i = 0; b && i < 2 * m; i++) top = fmaxf(top, fabsf(b[i]));
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix follows the X/Y gain (%.3f)", top);
+    T(fabsf(top - 0.225f) < 0.01f, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
 /* Volume past 100%: clean gain until it would distort, then a warm soft
  * clip (rounded, a little asymmetric, no DC left), never a hard clip */
 static void test_warm_clip(void)
@@ -1179,6 +1566,11 @@ static void test_delay_controls(void)
 int main(void)
 {
     test_rate_mismatch();
+    test_xy_gain();
+    test_live_fx();
+    test_scatter();
+    test_master_scatter();
+    test_mosaic();
     test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");
