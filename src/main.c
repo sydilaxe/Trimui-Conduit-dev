@@ -194,7 +194,7 @@ static int PAGE_ROWS[PG_N][40] = {
     { ROW_END },
     { ROW_END },
 };
-/* the one-screen layout (a test, CONDUIT_GRID=1): a page's controls in
+/* the one-screen layout (the default; CONDUIT_GRID=0 for the old lists): a page's controls in
  * columns, each under a title. UP/DOWN walk them column by column, so the
  * page's rows are put in this order */
 #define GCOL(t) (-200 - (t))
@@ -2441,7 +2441,7 @@ int main(int argc, char **argv)
     snprintf(G.cfg_path, sizeof G.cfg_path, "%s", cf && *cf ? cf : "conduit.cfg");
     mkdirs(G.rec_dir);
     G.lane_h = 66; G.rows_vis = ROWS_VISIBLE;
-    if (getenv("CONDUIT_GRID") && *getenv("CONDUIT_GRID") == '1') { grid_on = 1; grid_apply(); }
+    if (!(getenv("CONDUIT_GRID") && *getenv("CONDUIT_GRID") == '0')) { grid_on = 1; grid_apply(); }
 
     if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
     build_targets();

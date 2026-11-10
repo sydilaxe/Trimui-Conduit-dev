@@ -76,7 +76,7 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | Y | Reverse. FILES: delete (press twice). MIDI: unmap |
 | L2 / R2 (tap) | Previous / next track |
 | START | Save the mix + every track |
-| D-pad ↑↓ | Select setting |
+| D-pad ↑↓ | Select setting: down a column, then on to the top of the next |
 | D-pad ←→ | Change value (hold **L2** for fine, **R2** for coarse) |
 | L1 / R1 | Switch tab: TRACK · SEQ · EFFECTS · SYNC · IO · MIDI · FILES |
 | SELECT + A | Save the selected track's window (raw) |
@@ -193,8 +193,19 @@ click; on a synced track the window keeps its place in the bar.
 
 ### Effects
 
-The **EFFECTS** tab holds everything after the tracks, in three sections
-(↑↓ steps past the headings):
+Every tab fits on one screen: the four track lanes on top, the tabs, and the
+tab's settings below in titled columns, as sliders, switches and side-by-side
+choices (two short settings often share a row). ↑↓ walk down a column and on
+into the next, ←→ change the selected one. A setting that does nothing as
+things are set (Amount when the steps are Euclidean, the delay's Time when
+it's synced) is greyed out. Names and values are short in the cells (*Fdbk*,
+*1/8T*, *L60*); the footer shows the selected setting in full. The IN / OUT
+meters are the thin bars at the top right, and the lanes take whatever room
+the settings leave, so they are biggest on TRACK. MIDI and FILES are lists
+that scroll. (`CONDUIT_GRID=0` brings back the old one-row-per-setting
+lists.)
+
+The **EFFECTS** tab holds everything after the tracks, in five columns:
 
 - **Drive · crush · filter** and **Delay** are the master FX chain that each
   track's **FX send** feeds. The delay has *Mix*, *Sync* (free ms, or 1/16 …
@@ -213,10 +224,13 @@ settings are on the **SEQ** tab, for the selected track (L2/R2 picks
 another). On that tab each track's lane shows the steps of the bar it's
 playing, as on a step sequencer:
 
+- Each step shows the audio it plays: the track's own under the steps the
+  pattern leaves (lined up with the loop), or the slice it puts there,
+  repeated, reversed or cut short by the gate as you'll hear it.
 - The steps the pattern picks are lit (yellow), the others plain, and a
-  silent step is black. The white bars mark the step playing now, and the
-  ticks on top mark the beats.
-- A lit step shows what it does: a number is the slice it plays instead,
+  silent step is black. The white bars mark the step playing now, the white
+  line where the playhead is in it, and the ticks on top mark the beats.
+- A lit step's tag (top left) shows what it does: a number is the slice it plays instead,
   `x4` repeats it 4 times, `<` plays it backwards, `~` is a grain.
 - The top line shows the mode, how steps are picked, the slice size and the
   variation.
@@ -278,10 +292,10 @@ variation*.
 
 Scatter can also work on the **whole mix**, like a DJ mixer's: all four
 tracks with their FX and reverb, but not the live input. Its settings are the
-**MASTER SCATTER** rows at the bottom of the SEQ tab. They are the same as a
+**MIX PATTERN** and **MIX SHAPE** columns on the SEQ tab. They are the same as a
 track's, and it can run on top of the tracks' own scatter. While the SEQ tab
-is open, a **MIX** strip under the four lanes, where the meters usually are,
-shows its steps in the bar. With one of the master rows selected, SELECT + L1
+is open, a **MIX** strip under the four lanes
+shows its steps in the bar. With one of the master settings selected, SELECT + L1
 switches it on and off and SELECT + R1 steps to the next variation. MIDI has
 *Master scatter on/off* and *Master scatter: next variation*.
 
