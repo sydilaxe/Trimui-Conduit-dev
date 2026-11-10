@@ -212,7 +212,7 @@ static const int GRID[PG_N][48] = {
                  GCOL(GT_TSC_SHAPE), P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
                  GCOL(GT_MSC_PAT), P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
                  GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
-    [PG_FX] = { GCOL(GT_TONE), P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
+    [PG_FX] = { GCOL(GT_TONE), P_DRIVE, GPAIR, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
                 GCOL(GT_DLY), P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG,
                 GCOL(GT_DLY2), P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
                 GCOL(GT_VERB), P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE,
@@ -1749,6 +1749,18 @@ static void grid_name(int id, char *o, size_t sz)
         if (!strncmp(n, pre[i], l) && n[l]) { n += l; break; }
     }
     if (!strcmp(n, "Reverb")) n = "Type";
+    /* shorter where the column's title says the rest */
+    static const struct { int id; const char *n; } ab[] = {
+        { P_LOOP_START, "Start" }, { P_LOOP_END, "End" }, { P_FINE, "Fine" }, { P_DECAY, "Decay" }, { P_DECAY_MODE, "Decays" },
+        { P_FX_SEND, "FX" }, { P_VERB_SEND, "Reverb" },
+        { P_SC_MODE, "Mode" }, { P_MSC_MODE, "Mode" }, { P_SC_DIV, "Slice" }, { P_MSC_DIV, "Slice" },
+        { P_SC_TRIG, "Picks" }, { P_MSC_TRIG, "Picks" }, { P_SC_BARS, "Length" }, { P_MSC_BARS, "Length" },
+        { P_SC_VAR, "Var" }, { P_MSC_VAR, "Var" }, { P_MSC_FB, "Fdbk" },
+        { P_BITS, "Bits" }, { P_DOWNS, "Down" }, { P_RESO, "Reso" }, { P_DLY_DRIVE, "Sat" }, { P_DLY_WOW_RATE, "Rate" },
+        { P_VERB_PRE, "Pre" }, { P_VERB_DAMP, "Damp" }, { P_VERB_DIFF, "Diff" }, { P_VERB_LOWCUT, "Lo cut" },
+        { P_VERB_HICUT, "Hi cut" }, { P_DLY_LOWCUT, "Lo cut" }, { P_DLY_FB, "Fdbk" },
+    };
+    for (size_t i = 0; i < sizeof ab / sizeof ab[0]; i++) if (ab[i].id == id) n = ab[i].n;
     snprintf(o, sz, "%s", n);
     if (o[0] >= 'a' && o[0] <= 'z') o[0] -= 32;
 }
@@ -1789,6 +1801,8 @@ static void grid_value(int id, char *o, size_t sz)
     static const char *const verb[] = { "Bloom 1 exact", "Bloom 2 exact", "Bloom 1 adj", "Bloom 2 adj" };
     if (id == P_VERB_TYPE) { snprintf(o, sz, "%s", verb[(int)G.eng.p[P_VERB_TYPE] & 3]); return; }
     if (id == P_DLY_TIME && G.eng.p[P_DLY_SYNC] > 0.5f) { snprintf(o, sz, "synced"); return; }
+    if (id == P_SC_DIV || id == P_MSC_DIV) { snprintf(o, sz, "%s", L_SCDIV_SHORT[(int)*pp(id)]); return; }
+    if (id == P_DLY_SYNC) { snprintf(o, sz, "%s", (int)*pp(id) ? L_DSYNC[(int)*pp(id)] : "Free"); char *b = strstr(o, " bar"); if (b) *b = 0; return; }
     char v[300]; value_str(id, v, sizeof v);
     if (v[0] == '(') { snprintf(o, sz, "fixed"); return; }
     char *c = strstr(v, "  "); if (c) *c = 0;
@@ -1914,6 +1928,20 @@ static void draw(void)
         else snprintf(tb, sizeof tb, "first loop sets the bar");
         text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
     }
+    int grid = grid_page(G.page);
+    if (grid) {
+        /* a one-screen page: the meters up here, thin */
+        static const char *const ml[2] = { "IN", "OUT" };
+        float pk[2] = { e->in_peak, e->out_peak };
+        for (int m = 0; m < 2; m++) {
+            float db = pk[m] > 1e-6f ? 20.f * log10f(pk[m]) : -90.f;
+            float t = (db + 60.f) / 60.f; t = t < 0 ? 0 : t > 1 ? 1 : t;
+            int my = 14 + m * 16, mx = 760, mw = 180;
+            text(mx - 30, my - 3, C_DIM, 0.55f, ml[m]);
+            fill(mx, my, mw, 8, C_PANEL2, 255);
+            fill(mx, my, (int)(mw * t), 8, db > -1.f ? C_REC : db > -9.f ? C_ACCENT : C_PLAY, 255);
+        }
+    }
     if (G.xy_on) {
         /* the X/Y pad: tracks 1 2 / 3 4 in the corners, the point, and where the left stick left it */
         int px = 960, py = 6, pw = 48, ph = 44;
@@ -1925,35 +1953,34 @@ static void draw(void)
         int dx = px + (int)((G.xy_px + 1) * 0.5f * (pw - 6)), dy = py + (int)((G.xy_py + 1) * 0.5f * (ph - 6));
         fill(bx + 1, by + 1, 4, 4, C_DIM, 255);
         fill(dx, dy, 6, 6, C_ACCENT, 255);
-        text_right(px - 8, 18, C_ACCENT, 0.8f, "X/Y MIX");
-    } else {
+        if (!grid) text_right(px - 8, 18, C_ACCENT, 0.8f, "X/Y MIX");
+    } else if (!grid) {
         char nm[40]; fit(nm, sizeof nm, G.in_open, 22);
         text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
     }
 
     /* a one-screen page: smaller lanes, and the controls in columns below */
-    int grid = grid_page(G.page);
     G.lane_h = 66;
     if (grid) {
         /* the controls get the rows they need, the lanes what's left (fewer
          * controls: bigger waveforms) */
         int ncol, maxr; grid_dims(G.page, &ncol, &maxr);
-        int below = (G.page == PG_SEQ ? 44 : 22) + 2 + 34 + 8 + 24 + maxr * 54;
+        int below = (G.page == PG_SEQ ? 42 : 0) + 4 + 34 + 8 + 24 + maxr * 50;
         int lh = (724 - below - LANE_Y) / CD_TRACKS - 4;
-        G.lane_h = lh < 40 ? 40 : lh > 80 ? 80 : lh;
+        G.lane_h = lh < 40 ? 40 : lh > 90 ? 90 : lh;
     }
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
-    int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 2 : 12);
+    int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 0 : 12);
 
     /* meters */
-    if (G.page == PG_SEQ) draw_master_seq(grid ? ym - 4 : 342);
-    else {
+    if (G.page == PG_SEQ) draw_master_seq(grid ? ym : 342);
+    else if (!grid) {
         meter(16, ym, 488, "IN", e->in_peak);
         meter(520, ym, 488, "OUT", e->out_peak);
     }
 
     /* tabs */
-    int ty = grid ? ym + (G.page == PG_SEQ ? 40 : 22) : 384, tbh = grid ? 34 : 38;
+    int ty = grid ? ym + (G.page == PG_SEQ ? 42 : 0) : 384, tbh = grid ? 34 : 38;
     for (int i = 0; i < PG_N; i++) {
         int x = 16 + i * 142, on = i == G.page;
         fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
