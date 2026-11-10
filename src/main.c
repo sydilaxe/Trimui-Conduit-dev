@@ -56,6 +56,9 @@ static const char *const L_VERB[] = { "Bloom 1  exact MidiVerb II #45", "Bloom 2
                                       "Bloom 1  adjustable", "Bloom 2  adjustable (+85 ms)" };
 static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)", "Auto (follow a clock when one comes)" };
 static const char *const L_START[] = { "Follow", "Ignore (the clock only)" };
+static const char *const L_SCAT[] = { "Off", "Shuffle", "Stutter", "Reverse", "Euclid gate", "Scatter (all of them)", "Grain" };
+static const char *const L_SCDIV[] = { "1/4 (beats)", "1/8", "1/16", "1/32" };
+static const char *const L_SCBARS[] = { "1 bar", "2 bars", "4 bars", "8 bars" };
 static const char *const L_PRINT[] = { "Dry (FX heard only)", "With the live FX" };
 
 static const ParamDesc PD[P_COUNT] = {
@@ -72,6 +75,12 @@ static const ParamDesc PD[P_COUNT] = {
     [P_FX_SEND]    = { "FX send", 0, 1, 0.05f, 0.25f, K_SEND, 0 },
     [P_VERB_SEND]  = { "Reverb send", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_SYNC]       = { "Length", 0, 1, 1, 1, K_ENUM, L_LEN },
+    [P_SC_MODE]    = { "Scatter", 0, SC_N - 1, 1, 1, K_ENUM, L_SCAT },
+    [P_SC_DIV]     = { "Slice", 0, 3, 1, 1, K_ENUM, L_SCDIV },
+    [P_SC_AMOUNT]  = { "Amount", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_SC_GATE]    = { "Gate", 0.05f, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_SC_BARS]    = { "Pattern length", 0, 3, 1, 1, K_ENUM, L_SCBARS },
+    [P_SC_VAR]     = { "Variation", 0, 999, 1, 10, K_INT, 0 },
     [P_MASTER]     = { "Master volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MONITOR]    = { "Input monitor", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_FILT_MODE]  = { "Filter", 0, 3, 1, 1, K_ENUM, L_FILT },
@@ -120,7 +129,9 @@ static const ParamDesc PD[P_COUNT] = {
 static const char *const PKEY[P_COUNT] = {
     [P_LOOP_START] = "win_start", [P_LOOP_END] = "win_end", [P_PITCH] = "pitch", [P_FINE] = "fine",
     [P_REVERSE] = "reverse", [P_DECAY] = "loop_decay", [P_DECAY_MODE] = "decay_mode", [P_VOLUME] = "volume",
-    [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length", [P_MASTER] = "master", [P_MONITOR] = "monitor",
+    [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length",
+    [P_SC_MODE] = "scatter", [P_SC_DIV] = "scatter_slice", [P_SC_AMOUNT] = "scatter_amount", [P_SC_GATE] = "scatter_gate",
+    [P_SC_BARS] = "scatter_bars", [P_SC_VAR] = "scatter_variation", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
     [P_BITS] = "bits", [P_DOWNS] = "downsample", [P_DLY_SYNC] = "delay_sync", [P_DLY_TIME] = "delay_time",
     [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong", [P_DLY_TONE] = "delay_tone", [P_DLY_LOWCUT] = "delay_lowcut", [P_DLY_WOW] = "delay_wow",
@@ -137,12 +148,13 @@ static const char *const PKEY[P_COUNT] = {
 };
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TEMPO = -5, ROW_MIDI_DEV = -6,
-       ROW_H_TONE = -7, ROW_H_DLY = -8, ROW_H_VERB = -9,   /* section headings */
+       ROW_H_TONE = -7, ROW_H_DLY = -8, ROW_H_VERB = -9, ROW_H_SCAT = -10,   /* section headings */
        ROW_END = -100 };
 enum { PG_TRACK, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
 static const int PAGE_ROWS[PG_N][40] = {
-    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
+    { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE,
+      ROW_H_SCAT, P_SC_MODE, P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR, ROW_END },
     { ROW_H_TONE, P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
@@ -163,7 +175,7 @@ static const char *const ACT_KEY[A_N] = { "up", "down", "left", "right", "a", "b
 
 /* things a button or a MIDI note / CC can do */
 enum { ACT_REC, ACT_PLAY, ACT_DUB, ACT_ERASE, ACT_UNDO, ACT_REVERSE, ACT_MUTE, ACT_NEXT, ACT_PREV,
-       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB, ACT_XY };
+       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB, ACT_XY, ACT_SCATTER, ACT_SC_NEXT };
 /* the live controls (analog sticks, or mapped knobs) */
 enum { LIVE_WPOS, LIVE_WSIZE, LIVE_BEND, LIVE_DIR, LIVE_MIX_X, LIVE_MIX_Y };
 
@@ -184,7 +196,8 @@ typedef struct {
     int in_failed, out_block;
     int b_erased;                           /* B held: the loop was erased */
     int sel;                                /* selected track */
-    float send_mem[CD_TRACKS], verb_mem[CD_TRACKS];              /* the FX send to go back to when it's switched on again */
+    float send_mem[CD_TRACKS], verb_mem[CD_TRACKS];
+    float sc_mem[CD_TRACKS];                /* the scatter mode to go back to when it's switched on again */              /* the FX send to go back to when it's switched on again */
     int trig_used[A_N];                     /* L2/R2 used as a fine / coarse modifier while held */
 
     int page, sel_row[PG_N], scroll[PG_N];
@@ -320,6 +333,7 @@ static void build_targets(void)
         { ACT_SAVE_ALL, "save_all", "Save mix + tracks" }, { ACT_SAVE_TRACK, "save_track", "Save track" },
         { ACT_RESAMPLE, "resample", "Resample mix into track" },
         { ACT_XY, "xy_toggle", "X/Y mix on/off (sticks)" },
+        { ACT_SCATTER, "scatter_toggle", "Scatter on/off" }, { ACT_SC_NEXT, "scatter_next", "Scatter: next variation" },
     };
     char k[32];
     G.ntg = 0;
@@ -367,7 +381,8 @@ static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRE
                                P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
                                P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT };
-static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC };
+static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC,
+                                  P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
 
@@ -655,6 +670,7 @@ static void resample(int k)
     Track *t = trk(k);
     t->p[P_MUTE] = 0; t->p[P_PITCH] = 0; t->p[P_FINE] = 0; t->p[P_REVERSE] = 0; t->p[P_VOLUME] = 1; t->p[P_PAN] = 0;
     t->p[P_VERB_SEND] = 0;   /* the reverb is printed in already */
+    t->p[P_SC_MODE] = SC_OFF; /* and the scatter */
     eng_set_buffer(&G.eng, k, b, n);
     eng_reset_fx_params(G.eng.p);
     fx_reset(&G.eng.fx, G.eng.p);
@@ -763,6 +779,15 @@ static void do_action(int act, int k)
         toast(0, "Track %d FX send %s", k + 1, t->p[P_FX_SEND] > 0.f ? "on" : "off (dry)");
         break;
     case ACT_XY: xy_toggle(); break;
+    case ACT_SCATTER:
+        if (t->p[P_SC_MODE] >= 0.5f) { G.sc_mem[k] = t->p[P_SC_MODE]; t->p[P_SC_MODE] = SC_OFF; }
+        else t->p[P_SC_MODE] = G.sc_mem[k] >= 0.5f ? G.sc_mem[k] : SC_SCATTER;
+        toast(0, "Track %d scatter: %s", k + 1, L_SCAT[(int)t->p[P_SC_MODE]]);
+        break;
+    case ACT_SC_NEXT:
+        t->p[P_SC_VAR] = (float)(((int)t->p[P_SC_VAR] + 1) % 1000);
+        toast(0, "Track %d scatter: variation %d", k + 1, (int)t->p[P_SC_VAR]);
+        break;
     case ACT_VERB:
         if (t->p[P_VERB_SEND] > 0.f) { G.verb_mem[k] = t->p[P_VERB_SEND]; t->p[P_VERB_SEND] = 0.f; }
         else t->p[P_VERB_SEND] = G.verb_mem[k] > 0.f ? G.verb_mem[k] : 0.5f;
@@ -974,7 +999,7 @@ static void move_sel(int dir)
     /* section headings aren't settings: step past them */
     if (G.page < PG_MIDI) {
         int step = dir < 0 ? -1 : 1;
-        for (int g = 0; g < n && PAGE_ROWS[G.page][s] <= ROW_H_TONE && PAGE_ROWS[G.page][s] >= ROW_H_VERB; g++) {
+        for (int g = 0; g < n && PAGE_ROWS[G.page][s] <= ROW_H_TONE && PAGE_ROWS[G.page][s] >= ROW_H_SCAT; g++) {
             s += step; s = s < 0 ? n - 1 : s >= n ? 0 : s;
         }
     }
@@ -1008,7 +1033,10 @@ static void press(int a)
         case A_LEFT: xy_centre(); break;
         case A_MENU: G.running = 0; break;
         case A_L1: case A_R1:
+            /* both: quit. One: scatter on / off (L1), its next variation (R1);
+             * neither is saved, so pressing one first on the way out is harmless */
             if (G.held[A_L1] && G.held[A_R1]) G.running = 0;
+            else do_action(a == A_L1 ? ACT_SCATTER : ACT_SC_NEXT, G.sel);
             break;
         }
         return;
@@ -1339,6 +1367,7 @@ static void value_str(int id, char *o, size_t sz)
         break;
     case K_INT:
         if (id == P_BITS && v >= 16) snprintf(o, sz, "16 (off)");
+        else if (id == P_SC_VAR) snprintf(o, sz, "%.0f  (SELECT+R1: the next)", v);
         else if (id == P_DOWNS && v <= 1) snprintf(o, sz, "1 (off)");
         else snprintf(o, sz, "%.0f", v);
         break;
@@ -1397,12 +1426,24 @@ static void draw_lane(int k)
                 fill(xs - 1, y, 2, LANE_H, C_ACCENT, 255);
                 fill(xe - 1, y, 2, LANE_H, C_ACCENT, 255);
             }
+            if (t->p[P_SC_MODE] >= 0.5f && le - ls > CD_XFADE) {
+                /* scatter: its slices, and where it reads */
+                int L = le - ls - CD_XFADE;
+                double bar = t->synced && t->cyc_rec > 0 ? t->cyc_rec : 0;
+                int ns = sc_steps(t->p, L, bar, (int)G.eng.p[P_BEATS]);
+                if (ns <= 128)
+                    for (int j = 0; j <= ns; j++) fill(LANE_X + (int)((ls + (double)L * j / ns) * LANE_W / t->len), y + LANE_H - 6, 1, 6, C_ACCENT, 200);
+                if (t->playing && t->sc_pos_i >= 0) {
+                    int sx = LANE_X + (int)((long)t->sc_pos_i * LANE_W / t->len);
+                    fill(sx - 1, y, 3, LANE_H, C_ACCENT, 230);
+                }
+            }
             if (t->playing) {
                 int px = LANE_X + (int)((long)t->pos_i * LANE_W / t->len);
                 fill(px - 1, y, 2, LANE_H, C_TEXT, 230);
             }
         }
-        char info[96], len[32];
+        char info[160], len[32];
         if (t->rec_state == ST_REC) {
             char tm[32]; fmt_time(tm, sizeof tm, t->rec_pos / (double)CD_SR);
             snprintf(info, sizeof info, "%s%s", tm, t->stop_cyc > 0 ? "  ends on the bar" : "");
@@ -1412,11 +1453,16 @@ static void draw_lane(int k)
             char pn[16];
             if (fabsf(pan) < 0.005f) snprintf(pn, sizeof pn, "C");
             else snprintf(pn, sizeof pn, "%c%.0f", pan < 0 ? 'L' : 'R', fabsf(pan) * 100);
-            char fx[40] = "";
+            char fx[80] = "";
             if (t->p[P_FX_SEND] < 0.005f) snprintf(fx, sizeof fx, "dry  ");
             else if (t->p[P_FX_SEND] < 0.995f) snprintf(fx, sizeof fx, "fx %.0f%%  ", t->p[P_FX_SEND] * 100);
             if (t->p[P_VERB_SEND] > 0.005f) { size_t fl = strlen(fx); snprintf(fx + fl, sizeof fx - fl, "rev %.0f%%  ", t->p[P_VERB_SEND] * 100); }
             if (G.xy_on) { size_t fl = strlen(fx); snprintf(fx + fl, sizeof fx - fl, "xy %.0f%%  ", t->xy * 100); }
+            if (t->p[P_SC_MODE] >= 0.5f) {
+                static const char *const sn[SC_N] = { "", "shuffle", "stutter", "reverse", "euclid", "scatter", "grain" };
+                size_t fl = strlen(fx);
+                snprintf(fx + fl, sizeof fx - fl, "%s %s  ", sn[(int)t->p[P_SC_MODE]], (int)t->p[P_SC_DIV] == 0 ? "1/4" : L_SCDIV[(int)t->p[P_SC_DIV]]);
+            }
             snprintf(info, sizeof info, "%s%s  %s%s%svol %.0f%%  %s", len, eng_track_synced(&G.eng, k) ? "" : " free",
                      t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", fx, t->p[P_VOLUME] * 100, pn);
         }
@@ -1521,9 +1567,10 @@ static void draw(void)
             continue;
         }
         int id = PAGE_ROWS[G.page][i];
-        if (id <= ROW_H_TONE && id >= ROW_H_VERB) {
+        if (id <= ROW_H_TONE && id >= ROW_H_SCAT) {
             const char *h = id == ROW_H_TONE ? "DRIVE  CRUSH  FILTER" : id == ROW_H_DLY ? "DELAY  (all tracks' FX send)"
-                          : "REVERB  (the tracks' reverb send)";
+                          : id == ROW_H_VERB ? "REVERB  (the tracks' reverb send)"
+                          : "SCATTER  (slices on the beat, in a pattern)";
             fill(32, y + rh - 10, 960, 2, C_PANEL2, 255);
             text(32, y + 8, C_ACCENT, 0.8f, h);
             continue;
@@ -1574,9 +1621,9 @@ static void draw(void)
     fill(0, 728, SW, 40, C_PANEL, 255);
     const char *hint = G.page == PG_FILES ? "A load into track   Y delete   B play   L2/R2 track   L1/R1 tab"
         : G.page == PG_MIDI ? "A learn (move a knob / hit a pad)   Y unmap   B cancel   L1/R1 tab"
-        : G.held[A_SEL] ? "SEL+ START all  A track  B undo  X erase  Y resamp  L2 mute  R2 all  UP fx  DN rev"
+        : G.held[A_SEL] ? "SEL+ START all  A trk  B undo  X erase  Y resamp  L2 mute  R2 all  UP fx  DN rev  RT xy  L1 scatter  R1 next"
                         : "A rec  B play (hold: erase)  X dub  Y rev  L2/R2 track  START save  hold SELECT";
-    text(16, 736, C_DIM, 0.9f, hint);
+    text(16, 736 + (G.held[A_SEL] && G.page < PG_MIDI ? 3 : 0), C_DIM, G.held[A_SEL] && G.page < PG_MIDI ? 0.75f : 0.9f, hint);
 
     /* toast */
     if (now < G.toast_until) {
@@ -1675,6 +1722,20 @@ static int selftest(const char *shot_dir)
     set_held(A_SEL, 1); set_held(A_LEFT, 1); set_held(A_LEFT, 0); set_held(A_RIGHT, 1); set_held(A_RIGHT, 0); set_held(A_SEL, 0);
     WAITMS(50);
     CHECK(!G.xy_on && G.xy_x == 0 && t1->xy == 1.f && t2->xy == 1.f, "X/Y mix centred and off: every track at its volume");
+
+    /* scatter on track 2: SELECT + L1 switches it on, SELECT + R1 the next pattern */
+    G.sel = 1;
+    set_held(A_SEL, 1); set_held(A_L1, 1); set_held(A_L1, 0); set_held(A_R1, 1); set_held(A_R1, 0); set_held(A_SEL, 0);
+    CHECK(t2->p[P_SC_MODE] == SC_SCATTER && t2->p[P_SC_VAR] == 1 && G.running, "SELECT + L1 / R1: scatter on, the next variation");
+    t2->p[P_SC_AMOUNT] = 1.f;
+    G.page = PG_TRACK; G.sel_row[PG_TRACK] = page_count(PG_TRACK) - 5; G.scroll[PG_TRACK] = page_count(PG_TRACK) - ROWS_VISIBLE;
+    WAITMS(600);
+    CHECK(t2->sc_pos_i >= 0 && e->out_peak > 0.01f, "scatter plays track 2's slices");
+    SHOT("shot_scatter");
+    set_held(A_SEL, 1); set_held(A_L1, 1); set_held(A_L1, 0); set_held(A_SEL, 0);
+    WAITMS(100);
+    CHECK(t2->p[P_SC_MODE] == SC_OFF && t2->sc_pos_i == -1, "SELECT + L1 again: scatter off");
+    G.page = PG_FX;
 
     float before = t1->buf[2 * (t1->len / 3)];
     G.sel = 0;

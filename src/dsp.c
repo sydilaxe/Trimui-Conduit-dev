@@ -14,6 +14,7 @@
 #define JUMP_TOL 4             /* frames: a locked playhead further off than this jumps (crossfaded) */
 
 static inline float clampf(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
+static inline int clampi(int x, int a, int b) { return x < a ? a : x > b ? b : x; }
 static inline double clampd(double x, double a, double b) { return x < a ? a : x > b ? b : x; }
 static inline float db2lin(float db) { return powf(10.f, db / 20.f); }
 
@@ -29,6 +30,7 @@ void eng_default_track(float *tp)
     tp[P_LOOP_START] = 0.f; tp[P_LOOP_END] = 1.f;
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
     tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
+    tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = 2.f; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
 }
 
 void eng_default_params(float *p)
@@ -530,6 +532,8 @@ typedef struct {
     float keep; int decay_always;
     float gl, gr;              /* output gain targets */
     float send, vsend;         /* FX and reverb send targets */
+    int scat;                  /* scatter on */
+    double scbar;              /* the take's frames per bar for scatter (0: the window is a bar) */
 } TC;
 
 static void prep(const Engine *e, const Track *t, TC *c)
@@ -558,6 +562,8 @@ static void prep(const Engine *e, const Track *t, TC *c)
     c->gr = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
     c->send = clampf(tp[P_FX_SEND], 0.f, 1.f);
     c->vsend = clampf(tp[P_VERB_SEND], 0.f, 1.f);
+    c->scat = tp[P_SC_MODE] >= 0.5f;
+    c->scbar = t->synced && t->cyc_rec > 0 ? t->cyc_rec : 0;
 }
 
 /* where a locked track plays: the take keeps its place in the bar */
@@ -587,6 +593,125 @@ static inline void raw_at(const float *buf, int len, double p, float *l, float *
     int i0 = (int)p; float fr = (float)(p - i0);
     *l = buf[2 * i0] * (1 - fr) + buf[2 * i0 + 2] * fr;
     *r = buf[2 * i0 + 1] * (1 - fr) + buf[2 * i0 + 3] * fr;
+}
+
+/* ------------------------------------------------------------ scatter */
+
+int sc_steps(const float *tp, int L, double bar, int beats)
+{
+    int spb = (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);   /* steps per bar */
+    double step = (bar > 0 ? bar : (double)L) / spb;
+    long n = step > 0 ? lround(L / step) : 1;
+    return n < 1 ? 1 : n > 4096 ? 4096 : (int)n;
+}
+
+static uint32_t sc_hash(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+    uint32_t x = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u ^ (c + 0x165667B1u) * 0xC2B2AE3Du ^ (d + 1) * 0x27D4EB2Fu;
+    x ^= x >> 15; x *= 0x2C1B3C6Du; x ^= x >> 12; x *= 0x297A2D39u; x ^= x >> 15;
+    return x;
+}
+
+/* the pattern: the same step of the pattern does the same thing every time
+ * round, and Variation picks another pattern */
+void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
+               int *slice, double *where, int *rev, int *rep, int *mute)
+{
+    int mode = clampi((int)tp[P_SC_MODE], 0, SC_N - 1);
+    float a = clampf(tp[P_SC_AMOUNT], 0.f, 1.f);
+    int spb = (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);
+    long patlen = (long)spb << clampi((int)tp[P_SC_BARS], 0, 3);
+    long idx = g % patlen; if (idx < 0) idx += patlen;
+    uint32_t var = (uint32_t)clampi((int)tp[P_SC_VAR], 0, 999);
+#define R(salt) (sc_hash(var, (uint32_t)track, (uint32_t)idx, (salt)) * (1.0 / 4294967296.0))
+    *slice = st; *where = -1; *rev = 0; *rep = 1; *mute = 0;
+    switch (mode) {
+    case SC_SHUFFLE:
+        if (R(1) < a) *slice = (int)(R(2) * nsteps);
+        break;
+    case SC_STUTTER:
+        if (R(1) < a) {
+            static const int reps[] = { 2, 2, 3, 4, 4, 6, 8 };
+            *rep = reps[(int)(R(2) * 7)];
+            if (R(3) < 0.3) *slice = (st + nsteps - 1) % nsteps;   /* hold the last one */
+        }
+        break;
+    case SC_REVERSE:
+        if (R(1) < a) *rev = 1;
+        break;
+    case SC_EUCLID: {
+        /* Amount of the bar's steps sound, spread as evenly as they go */
+        int k = (int)lroundf(a * spb); k = k < 1 ? 1 : k > spb ? spb : k;
+        int rot = (int)(sc_hash(var, (uint32_t)track, 0, 9) % (uint32_t)spb);
+        *mute = ((idx % spb + rot) * k) % spb >= k;
+        break;
+    }
+    case SC_SCATTER:
+        if (R(1) < a) switch ((int)(R(4) * 6)) {
+            case 0: *slice = (int)(R(2) * nsteps); break;
+            case 1: *rep = 2; break;
+            case 2: *rep = 4; break;
+            case 3: *rev = 1; break;
+            case 4: *slice = (int)(R(2) * nsteps); *rev = 1; break;
+            default: *mute = 1; break;
+        }
+        break;
+    case SC_GRAIN: {
+        static const int reps[] = { 1, 1, 2, 4 };
+        if (R(1) < a) *where = R(2);
+        *rep = reps[(int)(R(3) * 4)];
+        *rev = R(5) < 0.25 * a;
+        break;
+    }
+    }
+#undef R
+    if (*slice < 0) *slice = 0;
+    if (*slice >= nsteps) *slice = nsteps - 1;
+}
+
+/* track k's loop through its scatter pattern at the playhead pos: the slice
+ * the pattern puts there, crossfaded where it jumps, through the gate */
+static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int len, int ls, int le, int xf,
+                    double pos, double speed, double bar, int beats, float *l, float *r)
+{
+    int L = le - xf - ls;
+    int n = sc_steps(tp, L, bar, beats);
+    double SL = (double)L / n, rel = pos - ls;
+    if (rel < 0) rel = 0;
+    if (rel >= L) rel = L - 1e-6;
+    int st = (int)(rel / SL); if (st >= n) st = n - 1;
+    double f = rel - st * SL;
+    if (!s->active) { s->pass = 0; s->step = st; s->last = pos - speed; s->env = 1.f; s->xleft = 0; }
+    else if (st != s->step) {
+        if (speed >= 0 ? st < s->step : st > s->step) s->pass++;
+        s->step = st;
+    }
+    int slice, rev, rep, mute; double where;
+    sc_decide(tp, k, s->pass * n + st, st, n, beats, &slice, &where, &rev, &rep, &mute);
+    double piece = SL / rep, f2 = fmod(f, piece);
+    double off = rev ? piece - f2 : f2;
+    double src = where >= 0 ? ls + fmod(where * L + off, (double)L) : ls + slice * SL + off;
+    if (src >= ls + L) src -= L;
+    if (src < ls) src = ls;
+    /* the gate: the first Gate of each piece sounds, with 2 ms fades */
+    double prog = (speed >= 0 ? f2 : piece - f2) / piece;
+    float gate = clampf(tp[P_SC_GATE], 0.05f, 1.f);
+    float target = !mute && (gate >= 0.999f || prog < gate) ? 1.f : 0.f;
+    const float ramp = 1.f / (CD_SR * 0.002f);
+    if (s->env < target) { s->env += ramp; if (s->env > target) s->env = target; }
+    else if (s->env > target) { s->env -= ramp; if (s->env < target) s->env = target; }
+    /* a jump in where it reads: the old place fades out under the new */
+    double expect = s->last + speed;
+    if (fabs(src - expect) > JUMP_TOL) { s->xpos = expect; s->xleft = CD_FADE; }
+    loop_at(buf, ls, le, xf, src, l, r);
+    if (s->xleft > 0) {
+        float ol, orr, wo = (float)s->xleft / CD_FADE;
+        raw_at(buf, len, s->xpos, &ol, &orr);
+        *l = *l * (1 - wo) + ol * wo; *r = *r * (1 - wo) + orr * wo;
+        s->xpos += speed; s->xleft--;
+    }
+    *l *= s->env; *r *= s->env;
+    s->last = src; s->active = 1;
 }
 
 /* Count the capture frames that arrive against the output frames played.
@@ -752,6 +877,7 @@ void eng_render(Engine *e, float *out, int frames)
     for (int k = 0; k < CD_TRACKS; k++) handle_cmds(e, &e->trk[k]);
     memcpy(p, e->p, sizeof p);
     transport_update(e, p);
+    int beats = (int)p[P_BEATS]; if (beats < 1) beats = 1;
     float gain = db2lin(p[P_IN_GAIN]);
     float thr = db2lin(p[P_THRESH]);
     float inmax = 0, outmax = 0;
@@ -884,7 +1010,7 @@ void eng_render(Engine *e, float *out, int frames)
                 t->gs += (c->send - t->gs) * 0.004f;
                 t->gv += (c->vsend - t->gv) * 0.004f;
 
-                if (t->play_g <= 0.f || c->L <= 0 || t->rec_state == ST_REC) { t->writing = 0; continue; }
+                if (t->play_g <= 0.f || c->L <= 0 || t->rec_state == ST_REC) { t->writing = 0; t->sc.active = 0; continue; }
                 int ls = c->ls, le = c->le, xf = c->xf, end = c->end, L = c->L;
 
                 /* where it plays this frame */
@@ -937,13 +1063,21 @@ void eng_render(Engine *e, float *out, int frames)
                 }
 
                 float dl, dr;
-                loop_at(t->buf, ls, le, xf, t->pos, &dl, &dr);
-                if (t->xleft > 0) {
-                    /* a jump: the old playhead fades out under the new one */
-                    float ol, orr, wo = (float)t->xleft / CD_FADE;
-                    raw_at(t->buf, t->len, t->xpos, &ol, &orr);
-                    dl = dl * (1 - wo) + ol * wo; dr = dr * (1 - wo) + orr * wo;
-                    t->xpos += c->speed; t->xleft--;
+                if (c->scat) {
+                    /* scatter reads the slices the pattern puts under the playhead */
+                    sc_read(&t->sc, t->p, k, t->buf, t->len, ls, le, xf, t->pos, c->speed, c->scbar, beats, &dl, &dr);
+                    t->xleft = 0;
+                } else {
+                    /* back from scatter: fade from where it was reading */
+                    if (t->sc.active) { t->sc.active = 0; start_jump(t, t->sc.last + c->speed); }
+                    loop_at(t->buf, ls, le, xf, t->pos, &dl, &dr);
+                    if (t->xleft > 0) {
+                        /* a jump: the old playhead fades out under the new one */
+                        float ol, orr, wo = (float)t->xleft / CD_FADE;
+                        raw_at(t->buf, t->len, t->xpos, &ol, &orr);
+                        dl = dl * (1 - wo) + ol * wo; dr = dr * (1 - wo) + orr * wo;
+                        t->xpos += c->speed; t->xleft--;
+                    }
                 }
                 if (!c->lock) t->pos = wrap(t->pos + c->speed, ls, L);
                 /* the FX send splits the track: that much goes through the
@@ -991,6 +1125,7 @@ void eng_render(Engine *e, float *out, int frames)
     for (int k = 0; k < CD_TRACKS; k++) {
         Track *t = &e->trk[k];
         t->pos_i = (int)t->pos;
+        t->sc_pos_i = t->sc.active ? (int)t->sc.last : -1;
         if (t->writing || t->rec_state == ST_REC) t->version++;
     }
     float dec = powf(0.9995f, (float)frames);
@@ -1172,6 +1307,10 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
             double bars = L / (t->cyc_rec * user);
             long qq = lround(bars * 4);
             if (qq >= 1 && fabs(qq / 4.0 - bars) < 0.01) q = q ? q / gcdl(q, qq) * qq : qq;
+            if (tp[P_SC_MODE] >= 0.5f) {   /* the whole scatter pattern */
+                long pq = 4L << clampi((int)tp[P_SC_BARS], 0, 3);
+                q = q ? q / gcdl(q, pq) * pq : pq;
+            }
             else if (bars * cyc > longest) longest = bars * cyc;
             if (q > 4 * 256) q = 4 * 256;
         } else {
@@ -1219,10 +1358,14 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
             int ls = m->ls[k], le = m->le[k], xf = m->xf[k], L = le - xf - ls;
             double pp = m->pos[k];
             float sd = m->send[k], vs = m->vsend[k];
+            int scat = m->tp[k][P_SC_MODE] >= 0.5f;
+            double scbar = t->synced && t->cyc_rec > 0 ? t->cyc_rec : 0;
+            int beats = (int)m->p[P_BEATS];
             for (int i = 0; i < b; i++) {
                 float l, r;
                 pp = wrap(pp, ls, L);
-                loop_at(t->buf, ls, le, xf, pp, &l, &r);
+                if (scat) sc_read(&m->sc[k], m->tp[k], k, t->buf, t->len, ls, le, xf, pp, m->speed[k], scbar, beats, &l, &r);
+                else loop_at(t->buf, ls, le, xf, pp, &l, &r);
                 pp += m->speed[k];
                 l = warm_clip(l * m->gl[k], &m->dc[k][0]); r = warm_clip(r * m->gr[k], &m->dc[k][1]);
                 if (sk) { sk[2 * i] = l; sk[2 * i + 1] = r; }

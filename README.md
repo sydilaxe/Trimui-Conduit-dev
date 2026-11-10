@@ -18,6 +18,11 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Input:** any capture device SDL sees. USB devices are picked
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
+- **Scatter:** cut a track's loop into slices on the beat (beats, 8ths,
+  16ths or 32nds) and play them in a pattern: shuffled, stuttered,
+  reversed, gated in a Euclidean rhythm, all of those, or as grains from
+  anywhere in the loop. It follows the bar, so it stays with MIDI clock and
+  linked Bricks.
 - **Live input through the effects:** send what you're playing to the Bloom
   reverb and the FX as you play, to hear them live, and choose whether takes
   record it dry or with the effects printed in.
@@ -83,6 +88,8 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | SELECT + ↓ | Reverb send on / off for the selected track (back on at the amount it had, 50% the first time) |
 | SELECT + → | X/Y mix on / off: the sticks mix the four tracks (below) |
 | SELECT + ← | Centre the X/Y mix |
+| SELECT + L1 | Scatter on / off for the selected track (back to the mode it had; *Scatter* the first time) |
+| SELECT + R1 | Scatter: the next variation (another pattern) |
 | MENU | Quit |
 
 On a device or USB gamepad with analog sticks:
@@ -196,6 +203,45 @@ The **EFFECTS** tab holds everything after the tracks, in three sections
   *Saturation* (repeats that get grittier as they go round).
 - **Reverb** is fed by each track's **Reverb send**, a send of its own (see
   below).
+
+### Scatter
+
+**TRACK → Scatter** cuts the track's loop window into slices and plays them
+in a pattern, like a DJ's scatter effect, or granular playback with long
+grains. The slices are steps of the bar: **Slice** is 1/4 (a beat), 1/8,
+1/16 or 1/32, so a 1-bar loop in 4/4 at 1/16 has 16. They follow the
+track's playhead, which follows the bar, so with **Sync to: MIDI clock** or
+a leading Brick the slices land on its beat at any tempo. A *Free* track's
+window counts as one bar.
+
+Each step of the pattern can:
+
+- **Shuffle:** play another slice of the loop.
+- **Stutter:** repeat the start of its slice 2, 3, 4, 6 or 8 times (now and
+  then the slice before).
+- **Reverse:** play its slice backwards.
+- **Euclid gate:** only *Amount* of the bar's steps sound, spread as evenly
+  as they go (25% at 1/16: four hits a bar); the others are silent.
+- **Scatter (all of them):** any of the above, or silence.
+- **Grain:** play from anywhere in the loop (not only slice starts), some
+  repeated 2 or 4 times, some backwards.
+
+Then:
+
+- **Amount:** the chance that a step is changed (for Euclid, how many sound).
+- **Gate:** how much of each slice (or repeat) sounds; lower is choppier.
+- **Pattern length:** 1, 2, 4 or 8 bars, then the pattern repeats exactly.
+- **Variation:** another pattern with the same settings (SELECT + R1 steps
+  to the next). The same variation is always the same pattern.
+
+Jumps are crossfaded and the gate fades in 2 ms, so nothing clicks. Overdubs
+still go into the loop in order, and Scatter only changes what's heard. A
+yellow line shows where it reads, and ticks along the bottom of the lane show
+the slices. The saved mix and Resample include the pattern: with Scatter on,
+the mix lasts whole patterns, and a resampled track has Scatter switched off
+because the pattern is already in it. Scatter's mode and Variation start Off
+and 0 each time. MIDI can map every setting, as well as *Scatter on/off* and
+*Scatter: next variation*.
 
 ### The live input through the effects
 
