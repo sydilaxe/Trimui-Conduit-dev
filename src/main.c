@@ -198,6 +198,7 @@ static int PAGE_ROWS[PG_N][40] = {
  * columns, each under a title. UP/DOWN walk them column by column, so the
  * page's rows are put in this order */
 #define GCOL(t) (-200 - (t))
+#define GPAIR (-150)   /* the next two share a row */
 enum { GT_WINDOW, GT_PITCH, GT_LEVEL, GT_SENDS, GT_TSC_PAT, GT_TSC_SHAPE, GT_MSC_PAT, GT_MSC_SHAPE,
        GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2, GT_N };
 static const char *const GRID_TITLE[GT_N] = { "WINDOW", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
@@ -210,7 +211,7 @@ static const int GRID[PG_N][48] = {
     [PG_SEQ] = { GCOL(GT_TSC_PAT), P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
                  GCOL(GT_TSC_SHAPE), P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
                  GCOL(GT_MSC_PAT), P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
-                 GCOL(GT_MSC_SHAPE), P_MSC_FB, P_MSC_FREEZE, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
+                 GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
     [PG_FX] = { GCOL(GT_TONE), P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
                 GCOL(GT_DLY), P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG,
                 GCOL(GT_DLY2), P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
@@ -224,7 +225,7 @@ static void grid_apply(void)
     for (int pg = 0; pg < PG_N; pg++) {
         if (!grid_page(pg)) continue;
         int n = 0;
-        for (int i = 0; GRID[pg][i] != ROW_END; i++) if (GRID[pg][i] > GCOL(0)) PAGE_ROWS[pg][n++] = GRID[pg][i];
+        for (int i = 0; GRID[pg][i] != ROW_END; i++) if (GRID[pg][i] > GCOL(0) && GRID[pg][i] != GPAIR) PAGE_ROWS[pg][n++] = GRID[pg][i];
         PAGE_ROWS[pg][n] = ROW_END;
     }
 }
@@ -1846,27 +1847,39 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     }
 }
 
+/* a one-screen page's columns, and the most rows in one */
+static void grid_dims(int pg, int *ncol, int *maxr)
+{
+    int r = 0; *ncol = 0; *maxr = 0;
+    for (int i = 0; GRID[pg][i] != ROW_END; i++) {
+        int id = GRID[pg][i];
+        if (id <= GCOL(0)) { ++*ncol; r = 0; continue; }
+        if (id == GPAIR) i += 2;
+        if (++r > *maxr) *maxr = r;
+    }
+}
+
 static void draw_grid(int y0, int y1)
 {
     int pg = G.page, cur = PAGE_ROWS[pg][G.sel_row[pg]];
-    int ncol = 0, maxr = 0, r = 0;
-    for (int i = 0; GRID[pg][i] != ROW_END; i++) {
-        if (GRID[pg][i] <= GCOL(0)) { ncol++; r = 0; } else if (++r > maxr) maxr = r;
-    }
+    int ncol, maxr; grid_dims(pg, &ncol, &maxr);
     int gap = 8, cw = (SW - 32 - (ncol - 1) * gap) / ncol, th = 24;
-    int rh = (y1 - y0 - th) / (maxr ? maxr : 1); if (rh > 58) rh = 58;
-    int c = -1;
+    int rh = (y1 - y0 - th) / (maxr ? maxr : 1); if (rh > 64) rh = 64;
+    int c = -1, r = 0;
     for (int i = 0; GRID[pg][i] != ROW_END; i++) {
-        int id = GRID[pg][i];
+        int id = GRID[pg][i], x = 16 + c * (cw + gap), y = y0 + th + r * rh;
         if (id <= GCOL(0)) {
-            c++; r = 0;
+            c++; r = 0; x += cw + gap;
             char t[48]; snprintf(t, sizeof t, GRID_TITLE[GCOL(0) - id], G.sel + 1);
-            int x = 16 + c * (cw + gap);
             text(x + 2, y0 + 2, C_ACCENT, 0.7f, t);
             fill(x, y0 + th - 6, cw, 2, C_PANEL2, 255);
             continue;
         }
-        grid_cell(16 + c * (cw + gap), y0 + th + r * rh, cw, rh - 4, id, id == cur);
+        if (id == GPAIR) {
+            int a = GRID[pg][++i], b = GRID[pg][++i], hw = (cw - 4) / 2;
+            grid_cell(x, y, hw, rh - 4, a, a == cur);
+            grid_cell(x + cw - hw, y, hw, rh - 4, b, b == cur);
+        } else grid_cell(x, y, cw, rh - 4, id, id == cur);
         r++;
     }
 }
@@ -1920,7 +1933,15 @@ static void draw(void)
 
     /* a one-screen page: smaller lanes, and the controls in columns below */
     int grid = grid_page(G.page);
-    G.lane_h = !grid ? 66 : G.page == PG_TRACK ? 56 : G.page == PG_SEQ ? 48 : 42;
+    G.lane_h = 66;
+    if (grid) {
+        /* the controls get the rows they need, the lanes what's left (fewer
+         * controls: bigger waveforms) */
+        int ncol, maxr; grid_dims(G.page, &ncol, &maxr);
+        int below = (G.page == PG_SEQ ? 44 : 22) + 2 + 34 + 8 + 24 + maxr * 54;
+        int lh = (724 - below - LANE_Y) / CD_TRACKS - 4;
+        G.lane_h = lh < 40 ? 40 : lh > 80 ? 80 : lh;
+    }
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
     int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 2 : 12);
 
