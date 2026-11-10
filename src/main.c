@@ -89,6 +89,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_SC_HITS]    = { "Hits", 0, 64, 1, 4, K_INT, 0 },
     [P_SC_STEPS]   = { "Steps", 0, 64, 1, 4, K_INT, 0 },
     [P_SC_ROT]     = { "Rotate", 0, 63, 1, 4, K_INT, 0 },
+    [P_SC_EVOLVE]  = { "Evolve", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_MASTER]     = { "Master volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MONITOR]    = { "Input monitor", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_FILT_MODE]  = { "Filter", 0, 3, 1, 1, K_ENUM, L_FILT },
@@ -136,6 +137,9 @@ static const ParamDesc PD[P_COUNT] = {
     [P_MSC_HITS]   = { "Master hits", 0, 64, 1, 4, K_INT, 0 },
     [P_MSC_STEPS]  = { "Master steps", 0, 64, 1, 4, K_INT, 0 },
     [P_MSC_ROT]    = { "Master rotate", 0, 63, 1, 4, K_INT, 0 },
+    [P_MSC_EVOLVE] = { "Master evolve", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_MSC_FB]     = { "Master feedback", 0, 0.95f, 0.05f, 0.25f, K_PCT, 0 },
+    [P_MSC_FREEZE] = { "Master freeze", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_CLOCK]      = { "Sync to", 0, 2, 1, 1, K_ENUM, L_CLOCK },
     [P_REC_WAIT]   = { "Rec waits for bar", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_BEATS]      = { "Beats per bar", 1, 16, 1, 4, K_INT, 0 },
@@ -150,7 +154,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length",
     [P_SC_MODE] = "scatter", [P_SC_DIV] = "scatter_slice_size", [P_SC_AMOUNT] = "scatter_amount", [P_SC_GATE] = "scatter_gate",
     [P_SC_BARS] = "scatter_bars", [P_SC_VAR] = "scatter_variation", [P_SC_TRIG] = "scatter_picks",
-    [P_SC_HITS] = "scatter_hits", [P_SC_STEPS] = "scatter_steps", [P_SC_ROT] = "scatter_rotate", [P_MASTER] = "master", [P_MONITOR] = "monitor",
+    [P_SC_HITS] = "scatter_hits", [P_SC_STEPS] = "scatter_steps", [P_SC_ROT] = "scatter_rotate", [P_SC_EVOLVE] = "scatter_evolve", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
     [P_BITS] = "bits", [P_DOWNS] = "downsample", [P_DLY_SYNC] = "delay_sync", [P_DLY_TIME] = "delay_time",
     [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong", [P_DLY_TONE] = "delay_tone", [P_DLY_LOWCUT] = "delay_lowcut", [P_DLY_WOW] = "delay_wow",
@@ -165,7 +169,8 @@ static const char *const PKEY[P_COUNT] = {
     [P_MSC_MODE] = "master_scatter", [P_MSC_DIV] = "master_scatter_slice_size", [P_MSC_AMOUNT] = "master_scatter_amount",
     [P_MSC_GATE] = "master_scatter_gate", [P_MSC_BARS] = "master_scatter_bars", [P_MSC_VAR] = "master_scatter_variation",
     [P_MSC_TRIG] = "master_scatter_picks", [P_MSC_HITS] = "master_scatter_hits", [P_MSC_STEPS] = "master_scatter_steps",
-    [P_MSC_ROT] = "master_scatter_rotate", [P_CLOCK] = "sync_to",
+    [P_MSC_ROT] = "master_scatter_rotate", [P_MSC_EVOLVE] = "master_scatter_evolve",
+    [P_MSC_FB] = "master_scatter_feedback", [P_MSC_FREEZE] = "master_scatter_freeze", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
     [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_out",
 };
@@ -177,9 +182,9 @@ enum { PG_TRACK, PG_SEQ, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "SEQ", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
 static const int PAGE_ROWS[PG_N][40] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
-    { ROW_H_TSC, P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR,
-      ROW_H_MSC, P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_VAR,
-      ROW_END },
+    { ROW_H_TSC, P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
+      ROW_H_MSC, P_MSC_MODE, P_MSC_FB, P_MSC_FREEZE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_AMOUNT,
+      P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
     { ROW_H_TONE, P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
@@ -200,7 +205,7 @@ static const char *const ACT_KEY[A_N] = { "up", "down", "left", "right", "a", "b
 
 /* things a button or a MIDI note / CC can do */
 enum { ACT_REC, ACT_PLAY, ACT_DUB, ACT_ERASE, ACT_UNDO, ACT_REVERSE, ACT_MUTE, ACT_NEXT, ACT_PREV,
-       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB, ACT_XY, ACT_SCATTER, ACT_SC_NEXT, ACT_MSC, ACT_MSC_NEXT };
+       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB, ACT_XY, ACT_SCATTER, ACT_SC_NEXT, ACT_MSC, ACT_MSC_NEXT, ACT_MSC_FREEZE };
 /* the live controls (analog sticks, or mapped knobs) */
 enum { LIVE_WPOS, LIVE_WSIZE, LIVE_BEND, LIVE_DIR, LIVE_MIX_X, LIVE_MIX_Y };
 
@@ -361,6 +366,7 @@ static void build_targets(void)
         { ACT_SCATTER, "scatter_toggle", "Scatter on/off" }, { ACT_SC_NEXT, "scatter_next", "Scatter: next variation" },
         { ACT_MSC, "master_scatter_toggle", "Master scatter on/off" },
         { ACT_MSC_NEXT, "master_scatter_next", "Master scatter: next variation" },
+        { ACT_MSC_FREEZE, "master_freeze_toggle", "Master scatter: freeze on/off" },
     };
     char k[32];
     G.ntg = 0;
@@ -408,9 +414,11 @@ static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRE
                                P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
                                P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
-                               P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT };
+                               P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
+                               P_MSC_EVOLVE, P_MSC_FB };
 static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC,
-                                  P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT };
+                                  P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
+                                  P_SC_EVOLVE };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
 
@@ -676,9 +684,41 @@ static void save_track(int k)
 }
 
 /* print the mix (with its FX) into track k; the tracks that went into it are muted */
+/* resample a master scatter mosaic: what was heard, the last whole
+ * patterns up to the bar line (a mosaic that feeds back or evolves can't be
+ * rendered again) */
+static int resample_mosaic(int k)
+{
+    Engine *e = &G.eng;
+    if (e->p[P_MSC_MODE] < 0.5f || !(e->p[P_MSC_FB] > 0.005f || e->p[P_MSC_FREEZE] >= 0.5f || e->p[P_MSC_EVOLVE] > 0.005f))
+        return 0;
+    Track *t = trk(k);
+    float *b = malloc(sizeof(float) * 2 * (size_t)t->cap);
+    if (!b) { toast(1, "Resample failed (out of memory?)"); return 1; }
+    SDL_LockAudioDevice(G.out_dev);
+    int n = eng_msc_capture(e, b, t->cap);
+    if (n > 0) {
+        for (int j = 0; j < CD_TRACKS; j++) if (j != k && trk(j)->playing) trk(j)->p[P_MUTE] = 1;
+        t->p[P_MUTE] = 0; t->p[P_PITCH] = 0; t->p[P_FINE] = 0; t->p[P_REVERSE] = 0; t->p[P_VOLUME] = 1; t->p[P_PAN] = 0;
+        t->p[P_VERB_SEND] = 0; t->p[P_SC_MODE] = SC_OFF;
+        eng_set_buffer(e, k, b, n);
+        eng_reset_fx_params(e->p);
+        fx_reset(&e->fx, e->p);
+        e->p[P_MSC_MODE] = SC_OFF; e->p[P_MSC_FREEZE] = 0;
+        t->playing = 1;
+    }
+    SDL_UnlockAudioDevice(G.out_dev);
+    free(b);
+    if (n > 0) toast(0, "Mosaic resampled into track %d: %.0f bar%s as heard (FX and master scatter off, the others muted)",
+                     k + 1, n / e->tr.cyc, n / e->tr.cyc > 1.5 ? "s" : "");
+    else toast(1, "Nothing to resample yet: the mosaic needs a whole pattern first");
+    return 1;
+}
+
 static void resample(int k)
 {
     if (any_recording()) { toast(1, "Stop recording first"); return; }
+    if (resample_mosaic(k)) return;
     busy_note("Rendering...");
     begin_busy();
     Mixdown *m = calloc(1, sizeof *m);
@@ -820,6 +860,11 @@ static void do_action(int act, int k)
         toast(0, "Master scatter: %s%s", L_SCAT[(int)*m], *m >= 0.5f && !G.eng.tr.running ? "  (waits for the bar)" : "");
         break;
     }
+    case ACT_MSC_FREEZE:
+        G.eng.p[P_MSC_FREEZE] = G.eng.p[P_MSC_FREEZE] >= 0.5f ? 0.f : 1.f;
+        toast(0, "Master scatter: %s", G.eng.p[P_MSC_FREEZE] >= 0.5f
+              ? (G.eng.p[P_MSC_MODE] >= 0.5f ? "frozen (no more of the mix)" : "freeze (once it's on)") : "freeze off");
+        break;
     case ACT_MSC_NEXT:
         G.eng.p[P_MSC_VAR] = (float)(((int)G.eng.p[P_MSC_VAR] + 1) % 1000);
         toast(0, "Master scatter: variation %d", (int)G.eng.p[P_MSC_VAR]);
@@ -1079,7 +1124,7 @@ static void press(int a)
             else {
                 /* on the SEQ tab's master rows, the master scatter */
                 int r = G.page == PG_SEQ ? PAGE_ROWS[PG_SEQ][G.sel_row[PG_SEQ]] : 0;
-                int master = r == ROW_H_MSC || (r >= P_MSC_MODE && r <= P_MSC_ROT);
+                int master = r == ROW_H_MSC || (r >= P_MSC_MODE && r <= P_MSC_FREEZE);
                 do_action(a == A_L1 ? (master ? ACT_MSC : ACT_SCATTER) : (master ? ACT_MSC_NEXT : ACT_SC_NEXT), G.sel);
             }
             break;
@@ -1366,8 +1411,8 @@ static void meter(int x, int y, int w, const char *label, float pk)
  * which of them it is (-1: not a scatter setting) */
 static int sc_view(int id, float *tp)
 {
-    if (id >= P_SC_MODE && id <= P_SC_ROT) { memcpy(tp, trk(G.sel)->p, sizeof(float) * P_TRACK_N); return id; }
-    if (id >= P_MSC_MODE && id <= P_MSC_ROT) { msc_params(G.eng.p, tp); return P_SC_MODE + (id - P_MSC_MODE); }
+    if (id >= P_SC_MODE && id <= P_SC_EVOLVE) { memcpy(tp, trk(G.sel)->p, sizeof(float) * P_TRACK_N); return id; }
+    if (id >= P_MSC_MODE && id <= P_MSC_EVOLVE) { msc_params(G.eng.p, tp); return P_SC_MODE + (id - P_MSC_MODE); }
     return -1;
 }
 
@@ -1382,6 +1427,10 @@ static void value_str(int id, char *o, size_t sz)
             snprintf(o, sz, "(fixed on the exact Bloom)");
         else if (id == P_DLY_TONE) snprintf(o, sz, "%.0f%%  (%.1f kHz)", v * 100, powf(16.f, v));
         else if (sid == P_SC_AMOUNT && stp[P_SC_TRIG] >= 0.5f) snprintf(o, sz, "%.0f%%  (Random only)", v * 100);
+        else if (sid == P_SC_EVOLVE && v < 0.005f) snprintf(o, sz, "Off  (the pattern repeats)");
+        else if (sid == P_SC_EVOLVE) snprintf(o, sz, "%.0f%%  of the steps change each time round", v * 100);
+        else if (id == P_MSC_FB && v < 0.005f) snprintf(o, sz, "Off  (cuts up the mix as it is)");
+        else if (id == P_MSC_FB) snprintf(o, sz, "%.0f%%  (cuts up its own output too)", v * 100);
         else if (id == P_VOLUME && v > 1.001f) snprintf(o, sz, "%.0f%%  (warm soft clip if it would distort)", v * 100);
         else snprintf(o, sz, "%.0f%%", v * 100);
         break;
@@ -1523,7 +1572,8 @@ static void draw_master_seq(void)
     int live = e->msc.pos_ago >= 0 && e->tr.running;
     fill(16, y, 76, h, C_PANEL, 255);
     text(24, y + 2, mode ? C_ACCENT : C_TEXT, 0.75f, "MIX");
-    text(24, y + 20, mode ? (live ? C_PLAY : C_DIM) : C_DIM, 0.6f, mode ? (live ? "SCATTER" : "WAITS") : "off");
+    int frz = e->p[P_MSC_FREEZE] >= 0.5f;
+    text(24, y + 20, mode ? (live ? (frz ? C_DUB : C_PLAY) : C_DIM) : C_DIM, 0.6f, mode ? (live ? (frz ? "FROZEN" : "SCATTER") : "WAITS") : "off");
     fill(LANE_X, y, LANE_W, h, C_PANEL, 255);
     int cnt = nb > 64 ? 64 : nb, cw = LANE_W / cnt;
     long g = live ? e->msc.g : -1, g0 = g >= 0 ? g / nb * nb : 0;
@@ -1908,8 +1958,9 @@ static int selftest(const char *shot_dir)
     WAITMS(100);
     CHECK(t2->p[P_SC_MODE] == SC_OFF && t2->sc_pos_i == -1, "SELECT + L1 again: scatter off");
     /* the master scatter: SELECT + L1 on its rows */
-    G.page = PG_SEQ; G.sel_row[PG_SEQ] = 12; G.scroll[PG_SEQ] = 11;
-    CHECK(PAGE_ROWS[PG_SEQ][12] == P_MSC_MODE, "the master scatter's rows on the SEQ tab");
+    int mrow = 0; while (PAGE_ROWS[PG_SEQ][mrow] != P_MSC_MODE && PAGE_ROWS[PG_SEQ][mrow] != ROW_END) mrow++;
+    G.page = PG_SEQ; G.sel_row[PG_SEQ] = mrow; G.scroll[PG_SEQ] = mrow - 1;
+    CHECK(PAGE_ROWS[PG_SEQ][mrow] == P_MSC_MODE, "the master scatter's rows on the SEQ tab");
     set_held(A_SEL, 1); set_held(A_L1, 1); set_held(A_L1, 0); set_held(A_SEL, 0);
     CHECK(e->p[P_MSC_MODE] == SC_SCATTER && t2->p[P_SC_MODE] == SC_OFF, "SELECT + L1 on the master rows: the master scatter on");
     e->p[P_MSC_TRIG] = SC_TRIG_EUCLID; e->p[P_MSC_HITS] = 6; e->p[P_MSC_DIV] = SC_SZ_8;
@@ -1990,6 +2041,19 @@ static int selftest(const char *shot_dir)
         SHOT("shot_midi");
         e->p[P_CLOCK] = CLOCK_INTERNAL;
     }
+    /* a mosaic: the master scatter feeding back, frozen, resampled as heard into track 3 */
+    for (int k = 0; k < CD_TRACKS; k++) trk(k)->p[P_MUTE] = 0;
+    e->p[P_MSC_MODE] = SC_SHUFFLE; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 0.5f; e->p[P_MSC_FB] = 0.6f;
+    e->p[P_MSC_EVOLVE] = 0.5f; e->p[P_MSC_BARS] = 0;
+    WAITMS((Uint32)(3 * e->tr.cyc * 1000 / CD_SR));
+    do_action(ACT_MSC_FREEZE, 0);
+    WAITMS((Uint32)(1.2 * e->tr.cyc * 1000 / CD_SR));
+    CHECK(e->msc.pos_ago >= 0 && e->out_peak > 0.01f, "a frozen mosaic plays");
+    G.sel = 2;
+    set_held(A_SEL, 1); set_held(A_Y, 1); set_held(A_Y, 0); set_held(A_SEL, 0);
+    WAITMS(300);
+    CHECK(trk(2)->playing && eng_track_synced(e, 2) && trk(2)->cycles == 1 && e->p[P_MSC_MODE] == SC_OFF && t1->p[P_MUTE] > 0.5f,
+          "SELECT + Y: the mosaic resampled into track 3 as heard, a bar in sync, the others muted");
     fprintf(stderr, "SELFTEST PASS (driver %s, xruns in %u)\n", SDL_GetCurrentAudioDriver(), (unsigned)e->overruns);
     return 0;
 }

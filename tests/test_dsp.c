@@ -1132,6 +1132,96 @@ static void test_master_scatter(void)
     eng_free(e); free(e);
 }
 
+/* Mosaics: Evolve changes a share of the pattern each time round; the
+ * master's Feedback cuts up its own output, Freeze keeps going on it */
+static double bar_out(Engine *e, float *keep, int frames)
+{
+    /* 480 frames at a time: a bar (48000) is exactly 100 of them */
+    float in[480 * 2] = { 0 }, out[480 * 2];
+    double en = 0;
+    for (int done = 0; done < frames; done += 480) {
+        eng_push_input(e, in, 480); eng_render(e, out, 480);
+        for (int i = 0; i < 960; i++) { en += out[i] * out[i]; if (keep && 2 * done + i < 2 * frames) keep[2 * done + i] = out[i]; }
+    }
+    return en;
+}
+
+static void test_mosaic(void)
+{
+    char msg[200];
+    /* Evolve */
+    float tp[P_TRACK_N]; eng_default_track(tp);
+    tp[P_SC_MODE] = SC_SHUFFLE; tp[P_SC_TRIG] = SC_TRIG_RANDOM; tp[P_SC_AMOUNT] = 1.f; tp[P_SC_BARS] = 0;
+    int ch[3] = { 0 }; float evs[3] = { 0.f, 0.25f, 1.f };
+    for (int k = 0; k < 3; k++) {
+        tp[P_SC_EVOLVE] = evs[k];
+        for (long gen = 1; gen <= 20; gen++)
+            for (int i = 0; i < 16; i++) {
+                int h, s1, r1, p1, m1, h2, s2, r2, p2, m2; double w1, w2;
+                sc_decide(tp, 0, (gen - 1) * 16 + i, i, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+                sc_decide(tp, 0, gen * 16 + i, i, 16, 4, &h2, &s2, &w2, &r2, &p2, &m2);
+                ch[k] += s1 != s2;
+            }
+    }
+    snprintf(msg, sizeof msg, "Evolve: steps changed from one round to the next: 0%% %d, 25%% %d, 100%% %d of 320", ch[0], ch[1], ch[2]);
+    T(ch[0] == 0 && ch[1] > 50 && ch[1] < 110 && ch[2] > 250, msg);
+
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 4);
+    int n = 48000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 220, 0.4f);
+    for (int i = 0; i < 24000; i++) { st[2 * i] *= 0.25f; st[2 * i + 1] *= 0.25f; }   /* a quiet half bar, then a loud one */
+    eng_set_buffer(e, 0, st, n);
+    e->trk[0].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0);
+    double en0 = bar_out(e, NULL, 48000); en0 = bar_out(e, NULL, 48000);
+    /* Feedback with nothing picked is a bar echo: stop the loop and it rings on, fading */
+    e->p[P_MSC_MODE] = SC_SHUFFLE; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 0.f; e->p[P_MSC_FB] = 0.5f;
+    bar_out(e, NULL, 4 * 48000);
+    e->trk[0].p[P_MUTE] = 1;
+    bar_out(e, NULL, 48000);
+    double e1 = bar_out(e, NULL, 48000), e2 = bar_out(e, NULL, 48000);
+    snprintf(msg, sizeof msg, "master Feedback 50%%: the mosaic rings on a bar at a time, halving (%.3f then %.3f of the mix)", e1 / en0, e2 / en0);
+    T(e1 > 0.01 * en0 && fabs(e2 / e1 - 0.25) < 0.05, msg);
+    /* Freeze: no more of the mix, the last bar held exactly */
+    e->trk[0].p[P_MUTE] = 0;
+    e->p[P_MSC_FB] = 0.f;
+    bar_out(e, NULL, 3 * 48000);
+    e->p[P_MSC_FREEZE] = 1;
+    bar_out(e, NULL, 48000);
+    e->trk[0].p[P_MUTE] = 1;
+    float *b1 = malloc(sizeof(float) * 2 * 48128), *b2 = malloc(sizeof(float) * 2 * 48128);
+    bar_out(e, NULL, 48000);
+    double f1 = bar_out(e, b1, 48000);
+    bar_out(e, b2, 48000);
+    float diff = 0; for (int i = 0; i < 2 * 47000; i++) diff = fmaxf(diff, fabsf(b1[i] - b2[i]));
+    snprintf(msg, sizeof msg, "master Freeze: the loop muted, the last bar goes on as it was (energy %.2f of the mix, bar to bar %.4f)", f1 / en0, diff);
+    T(fabs(f1 / en0 - 1) < 0.05 && diff < 0.02, msg);
+    /* Feedback and Freeze with the pattern cutting: it keeps changing and stays in bounds */
+    e->p[P_MSC_MODE] = SC_SCATTER; e->p[P_MSC_AMOUNT] = 1.f; e->p[P_MSC_EVOLVE] = 0.5f;
+    bar_out(e, b1, 48000);
+    bar_out(e, b2, 48000);
+    diff = 0; float top = 0;
+    for (int i = 0; i < 2 * 47000; i++) { diff = fmaxf(diff, fabsf(b1[i] - b2[i])); top = fmaxf(top, fabsf(b2[i])); }
+    e->p[P_MSC_FREEZE] = 0; e->p[P_MSC_FB] = 0.97f; e->trk[0].p[P_MUTE] = 0;
+    float pk; run_silence(e, 20 * 48000, &pk);
+    snprintf(msg, sizeof msg, "a frozen mosaic, cut up again: each bar differs (%.3f), feedback 97%% for 20 bars stays finite (peak %.3f)", diff, pk);
+    T(diff > 0.05f && top <= 1.f && isfinite(pk) && pk <= 1.f, msg);
+    /* Resample takes what was heard: the last bar up to the bar line */
+    e->p[P_MSC_FB] = 0.f; e->p[P_MSC_MODE] = SC_OFF; e->p[P_MSC_EVOLVE] = 0;
+    bar_out(e, NULL, 2 * 48000);
+    float *cap = malloc(sizeof(float) * 2 * 96000);
+    e->p[P_MSC_MODE] = SC_CHOP; e->p[P_MSC_TRIG] = SC_TRIG_EUCLID; e->p[P_MSC_HITS] = 4;
+    bar_out(e, NULL, 2 * 48000 + 480 * 20);
+    int nc = eng_msc_capture(e, cap, 96000);
+    double ec = 0; for (int i = 0; i < 2 * nc; i++) ec += cap[i] * cap[i];
+    snprintf(msg, sizeof msg, "the master scatter's output captured: a bar (%d frames), as heard (energy %.2f of the mix)", nc, ec / en0);
+    T(nc == 48000 && fabs(ec / en0 - 0.25) < 0.05, msg);
+    free(cap); free(b1); free(b2); free(st);
+    eng_free(e); free(e);
+}
+
 /* The X/Y mix's gain sits on top of the volume, in what's heard and in the
  * saved mix, and fades rather than steps */
 static void test_xy_gain(void)
@@ -1480,6 +1570,7 @@ int main(void)
     test_live_fx();
     test_scatter();
     test_master_scatter();
+    test_mosaic();
     test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");

@@ -257,6 +257,10 @@ Then:
 - **Gate:** how much of each slice (or repeat) sounds; lower is choppier.
 - **Pattern length:** the random choices (which slice, how many repeats,
   and the steps themselves with *Random*) repeat after 1, 2, 4 or 8 bars.
+- **Evolve:** off, the pattern repeats exactly. Turned up, that share of
+  its steps get new random choices each time the pattern comes round, so
+  it keeps changing slowly (at 100% it is new every time). The Euclidean
+  hits stay put; what's done on them changes.
 - **Variation:** other random choices with the same settings (SELECT + R1
   steps to the next). The same variation is always the same pattern.
 
@@ -290,8 +294,30 @@ plays from there:
   before.
 
 It needs a bar to follow: a synced loop, MIDI clock or a leading Brick. Until
-the transport runs it passes the mix through ("WAITS"). The saved mix and
-Resample include it, and Resample switches it off afterwards.
+the transport runs it passes the mix through ("WAITS").
+
+**Mosaics.** Two settings let the passes build on each other:
+
+- **Master feedback:** what it cuts up is the mix blended with its own output
+  from a bar before. Each pass slices the slices of the last one, so the
+  pattern builds up into a mosaic of the loops. Higher values keep more of
+  the mosaic and take in less of the fresh mix. With nothing picked it's a
+  one-bar echo that fades.
+- **Master freeze:** takes in no more of the mix and keeps working on what
+  it has. With nothing picked, the last bar repeats exactly. With steps
+  picked, and with Evolve, each pass cuts the frozen mosaic up again. Gated
+  and silent steps wear it away.
+
+Evolve on the master and the tracks keeps the choices moving pass to pass.
+MIDI has *Master scatter: freeze on/off*.
+
+The saved mix includes master scatter. **Resample** (SELECT + Y) with
+Feedback, Freeze or Evolve on takes the mosaic **as you heard it**: the last
+whole pattern (up to 8 bars) up to the bar line. It goes into the selected
+track as a synced loop; the other tracks are muted and the FX and master
+scatter are switched off, so you can keep going: scatter the mosaic again,
+feed it back, resample again. Without those three settings, Resample renders
+the mix afresh as before, and switches master scatter off afterwards.
 
 ### The live input through the effects
 

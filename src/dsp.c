@@ -31,7 +31,7 @@ void eng_default_track(float *tp)
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
     tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
     tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = SC_SZ_16; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
-    tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_HITS] = 5.f; tp[P_SC_STEPS] = 0.f; tp[P_SC_ROT] = 0.f;
+    tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_HITS] = 5.f; tp[P_SC_STEPS] = 0.f; tp[P_SC_ROT] = 0.f; tp[P_SC_EVOLVE] = 0.f;
 }
 
 void eng_default_params(float *p)
@@ -46,7 +46,8 @@ void eng_default_params(float *p)
     p[P_IN_FX_SEND] = 0.f;  p[P_IN_VERB_SEND] = 0.f; p[P_IN_PRINT] = IN_PRINT_DRY;
     {   /* master scatter: as a track's */
         float tp[P_TRACK_N]; eng_default_track(tp);
-        for (int i = 0; i <= P_SC_ROT - P_SC_MODE; i++) p[P_MSC_MODE + i] = tp[P_SC_MODE + i];
+        for (int i = 0; i <= P_SC_EVOLVE - P_SC_MODE; i++) p[P_MSC_MODE + i] = tp[P_SC_MODE + i];
+        p[P_MSC_FB] = 0.f; p[P_MSC_FREEZE] = 0.f;
     }
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
     p[P_CLOCK_START] = START_FOLLOW; p[P_CLOCK_OUT] = 1.f;
@@ -196,8 +197,9 @@ int eng_init(Engine *e, int max_seconds)
         t->last_od = -1;
     }
     e->msc.ring = calloc((size_t)MSC_RING * 2, sizeof(float));
+    e->msc.yring = calloc((size_t)MSC_RING * 2, sizeof(float));
     e->msc.pos_ago = -1;
-    if (!e->msc.ring || fx_init(&e->fx) || verb_init(&e->verb) || fx_init(&e->fx_in) || verb_init(&e->verb_in)) { eng_free(e); return -1; }
+    if (!e->msc.ring || !e->msc.yring || fx_init(&e->fx) || verb_init(&e->verb) || fx_init(&e->fx_in) || verb_init(&e->verb_in)) { eng_free(e); return -1; }
     eng_default_params(e->p);
     fx_reset(&e->fx, e->p);
     fx_reset(&e->fx_in, e->p);
@@ -224,6 +226,7 @@ void eng_free(Engine *e)
     fx_free(&e->fx_in);
     verb_free(&e->verb_in);
     free(e->msc.ring); e->msc.ring = NULL;
+    free(e->msc.yring); e->msc.yring = NULL;
 }
 
 double eng_rate(const float *tp, float bend)
@@ -654,6 +657,16 @@ void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats
     long patlen = (long)sc_bar_steps(tp, beats) << clampi((int)tp[P_SC_BARS], 0, 3);
     long idx = g % patlen; if (idx < 0) idx += patlen;
     uint32_t var = (uint32_t)clampi((int)tp[P_SC_VAR], 0, 999);
+    /* Evolve: each time round the pattern, that share of its steps get new
+     * choices (a step keeps the ones it got last, up to 64 rounds back) */
+    float ev = clampf(tp[P_SC_EVOLVE], 0.f, 1.f);
+    if (ev > 0.f && g >= patlen) {
+        long gen = g / patlen;
+        for (long k = gen; k > 0 && gen - k < 64; k--)
+            if (sc_hash(var, (uint32_t)track, (uint32_t)idx, 1000u + (uint32_t)k) * (1.0 / 4294967296.0) < ev) {
+                var += (uint32_t)k * 0x9E3779B9u; break;
+            }
+    }
 #define R(salt) (sc_hash(var, (uint32_t)track, (uint32_t)idx, (salt)) * (1.0 / 4294967296.0))
     if (tp[P_SC_TRIG] >= 0.5f) {
         /* Euclidean: Hits as evenly as they go over the cycle, from its first
@@ -700,6 +713,19 @@ void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats
     if (*slice >= nsteps) *slice = nsteps - 1;
 }
 
+/* sc_decide for a player: it changes only at a step (or when a setting does) */
+static void sc_decide_c(Scatter *s, const float *tp, int track, long g, int st, int nsteps, int beats,
+                        int *hit, int *slice, double *where, int *rev, int *rep, int *mute)
+{
+    const float *t = tp + P_SC_MODE;
+    int key = nsteps * 64 + beats;
+    if (!s->cvalid || s->cg != g || s->cn != key || memcmp(s->ctp, t, sizeof s->ctp)) {
+        sc_decide(tp, track, g, st, nsteps, beats, &s->c_hit, &s->c_slice, &s->c_where, &s->c_rev, &s->c_rep, &s->c_mute);
+        s->cg = g; s->cn = key; s->cvalid = 1; memcpy(s->ctp, t, sizeof s->ctp);
+    }
+    *hit = s->c_hit; *slice = s->c_slice; *where = s->c_where; *rev = s->c_rev; *rep = s->c_rep; *mute = s->c_mute;
+}
+
 /* track k's loop through its scatter pattern at the playhead pos: the slice
  * the pattern puts there, crossfaded where it jumps, through the gate */
 static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int len, int ls, int le, int xf,
@@ -718,7 +744,7 @@ static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int le
         s->step = st;
     }
     int hit, slice, rev, rep, mute; double where;
-    sc_decide(tp, k, s->pass * n + st, st, n, beats, &hit, &slice, &where, &rev, &rep, &mute);
+    sc_decide_c(s, tp, k, s->pass * n + st, st, n, beats, &hit, &slice, &where, &rev, &rep, &mute);
     double piece = SL / rep, f2 = fmod(f, piece);
     double off = rev ? piece - f2 : f2;
     double src = where >= 0 ? ls + fmod(where * L + off, (double)L) : ls + slice * SL + off;
@@ -747,12 +773,12 @@ static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int le
 
 /* --------------------------------------------------- master scatter */
 
-_Static_assert(P_MSC_ROT - P_MSC_MODE == P_SC_ROT - P_SC_MODE, "master scatter params in a track's order");
+_Static_assert(P_MSC_EVOLVE - P_MSC_MODE == P_SC_EVOLVE - P_SC_MODE, "master scatter params in a track's order");
 
 void msc_params(const float *p, float *tp)
 {
     eng_default_track(tp);
-    for (int i = 0; i <= P_SC_ROT - P_SC_MODE; i++) tp[P_SC_MODE + i] = p[P_MSC_MODE + i];
+    for (int i = 0; i <= P_SC_EVOLVE - P_SC_MODE; i++) tp[P_SC_MODE + i] = p[P_MSC_MODE + i];
 }
 
 static inline void ring_at(const float *ring, double pos, float *l, float *r)
@@ -767,18 +793,25 @@ static inline void ring_at(const float *ring, double pos, float *l, float *r)
 
 /* n frames of the mix in buf, in place. ph[i]: the transport (bars) at
  * frame i, run[i]: it runs, cyc: frames a bar, F0: buf[0]'s frame count
- * (where it goes in the ring), first: the earliest frame there is. */
+ * (where it goes in the rings), first: the earliest frame there is.
+ *
+ * What it cuts up (x, the ring) is the mix blended with its own output a
+ * bar before (Feedback), so each pass slices the slices of the last: the
+ * mosaic builds up. Freeze takes no more of the mix: it goes on cutting up
+ * what it has. */
 static void msc_block(MScat *m, const float *p, int beats, float *buf, const double *ph, const uint8_t *run,
                       double cyc, uint64_t F0, uint64_t first, int n)
 {
     float tp[P_TRACK_N]; msc_params(p, tp);
     int mode_on = tp[P_SC_MODE] >= 0.5f && cyc > 0 && cyc * 2 + 4096 < MSC_RING;
+    int frozen = mode_on && p[P_MSC_FREEZE] >= 0.5f;
+    float fb = mode_on ? (frozen ? 1.f : clampf(p[P_MSC_FB], 0.f, 0.97f)) : 0.f;
     Scatter *s = &m->s;
     if (!mode_on && s->active && s->xleft == 0 && s->env >= 1.f && s->last + 1 >= (double)F0 && s->last + 1 <= (double)F0 + 0.5) {
         /* off: only keep the mix */
         for (int i = 0; i < n; i++) {
             uint32_t w = (uint32_t)((F0 + i) & (MSC_RING - 1)) * 2;
-            m->ring[w] = buf[2 * i]; m->ring[w + 1] = buf[2 * i + 1];
+            m->ring[w] = m->yring[w] = buf[2 * i]; m->ring[w + 1] = m->yring[w + 1] = buf[2 * i + 1];
         }
         s->last = (double)(F0 + n - 1); m->pos_ago = -1;
         return;
@@ -790,7 +823,15 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
     for (int i = 0; i < n; i++) {
         uint64_t F = F0 + i;
         uint32_t w = (uint32_t)(F & (MSC_RING - 1)) * 2;
-        m->ring[w] = buf[2 * i]; m->ring[w + 1] = buf[2 * i + 1];
+        /* what it cuts up: the mix, and its output a bar ago */
+        float xl = buf[2 * i], xr = buf[2 * i + 1];
+        if (fb > 0.f && run[i]) {
+            double back = (double)F - cyc;
+            float yl = 0, yr = 0;
+            if (back >= (double)first) ring_at(m->yring, back, &yl, &yr);
+            xl = xl * (1 - fb) + yl * fb; xr = xr * (1 - fb) + yr * fb;
+        }
+        m->ring[w] = xl; m->ring[w + 1] = xr;
         double src = (double)F;
         float target = 1.f;
         if (mode_on && run[i]) {
@@ -802,7 +843,7 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
             double f = (stepf - g) * SL;
             int st = (int)floor(barf * spbf); if (st >= nb) st = nb - 1;
             int hit, slice, rev, rep, mute; double where;
-            sc_decide(tp, MSC_TRACK, g, st, nb, beats, &hit, &slice, &where, &rev, &rep, &mute);
+            sc_decide_c(s, tp, MSC_TRACK, g, st, nb, beats, &hit, &slice, &where, &rev, &rep, &mute);
             double piece = SL / rep, f2 = fmod(f, piece), off = rev ? piece - f2 : f2;
             double Fs = (double)F - f, Fb = (double)F - barf * cyc;
             if (where >= 0) src = Fb - cyc + fmod(where * cyc + off, cyc);
@@ -826,10 +867,31 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
             l = l * (1 - wo) + ol * wo; r = r * (1 - wo) + orr * wo;
             s->xpos += 1; s->xleft--;
         }
-        buf[2 * i] = l * s->env; buf[2 * i + 1] = r * s->env;
+        l *= s->env; r *= s->env;
+        m->yring[w] = l; m->yring[w + 1] = r;
+        buf[2 * i] = l; buf[2 * i + 1] = r;
         s->last = src; s->active = 1;
     }
     m->pos_ago = mode_on ? (int)((double)(F0 + n - 1) - s->last) : -1;
+}
+
+int eng_msc_capture(Engine *e, float *st, int max_frames)
+{
+    Transport *tr = &e->tr;
+    double cyc = tr->cyc;
+    if (cyc <= 0 || !tr->running || !e->msc.yring) return 0;
+    float tp[P_TRACK_N]; msc_params(e->p, tp);
+    int bars = 1 << clampi((int)tp[P_SC_BARS], 0, 3);
+    double room = (double)MSC_RING / 2 < max_frames ? (double)MSC_RING / 2 : (double)max_frames;
+    while (bars > 1 && bars * cyc > room) bars >>= 1;
+    if (bars * cyc > room) return 0;
+    /* up to the last bar line: the next frame out is out_total, at the phase */
+    double Fb = (double)e->out_total - (tr->phase - floor(tr->phase)) * cyc;
+    int nf = (int)lround(bars * cyc);
+    double start = Fb - nf;
+    if (start < 0) return 0;
+    for (int i = 0; i < nf; i++) ring_at(e->msc.yring, start + i, &st[2 * i], &st[2 * i + 1]);
+    return nf;
 }
 
 /* Count the capture frames that arrive against the output frames played.
@@ -1469,7 +1531,9 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
     if (verb_init(&m->verb)) { fx_free(&m->fx); m->frames = 0; return 0; }
     if (m->p[P_MSC_MODE] >= 0.5f && cyc > 0) {
         m->msc.ring = calloc((size_t)MSC_RING * 2, sizeof(float));
-        if (!m->msc.ring) { fx_free(&m->fx); verb_free(&m->verb); m->frames = 0; return 0; }
+        m->msc.yring = calloc((size_t)MSC_RING * 2, sizeof(float));
+        if (!m->msc.ring || !m->msc.yring) { free(m->msc.ring); free(m->msc.yring); m->msc.ring = m->msc.yring = NULL;
+                                             fx_free(&m->fx); verb_free(&m->verb); m->frames = 0; return 0; }
     }
     fx_reset(&m->fx, m->p);
     m->frames = (int)(frames + 0.5);
@@ -1535,4 +1599,4 @@ void eng_mix_render(Engine *e, Mixdown *m, float *mix, float *stems[CD_TRACKS], 
     m->done += n;
 }
 
-void eng_mix_end(Mixdown *m) { fx_free(&m->fx); verb_free(&m->verb); free(m->msc.ring); m->msc.ring = NULL; }
+void eng_mix_end(Mixdown *m) { fx_free(&m->fx); verb_free(&m->verb); free(m->msc.ring); free(m->msc.yring); m->msc.ring = m->msc.yring = NULL; }

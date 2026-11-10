@@ -19,7 +19,7 @@ typedef enum {
     P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_VERB_SEND, P_SYNC,
     /* scatter: the loop in slices on the beat, played in a pattern */
     P_SC_MODE, P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR,
-    P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
+    P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_EVOLVE,
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
@@ -37,7 +37,8 @@ typedef enum {
     /* master scatter: the whole mix (after the FX, before the live input),
      * its settings as a track's P_SC_* (same order) */
     P_MSC_MODE, P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_VAR,
-    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
+    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_EVOLVE,
+    P_MSC_FB, P_MSC_FREEZE,    /* the master's own: its output fed back, and held */
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
     P_COUNT
@@ -73,6 +74,10 @@ typedef struct {
     double last;               /* where it read the last frame */
     double xpos; int xleft;    /* a jump: where it was, fading out */
     float env;                 /* the gate */
+    /* the last step's decision (it holds for the whole step) and what it was for */
+    long cg; int cn, cvalid;
+    float ctp[P_SC_EVOLVE - P_SC_MODE + 1];
+    int c_hit, c_slice, c_rev, c_rep, c_mute; double c_where;
 } Scatter;
 
 /* Undo: up to CD_UNDO_LEVELS steps per track, newest last. An overdub keeps a
@@ -182,7 +187,8 @@ typedef struct {
  * from the bar before (or, a repeat, from the start of their own step). */
 #define MSC_RING (1 << 20)
 typedef struct {
-    float *ring;               /* stereo, MSC_RING frames, indexed by frame count */
+    float *ring;               /* stereo, MSC_RING frames, indexed by frame count: what it cuts up */
+    float *yring;              /* ... and what came out (fed back a bar later) */
     Scatter s;
     volatile int pos_ago;      /* frames back it reads now (0: the mix as it is, -1: off), for the UI */
     volatile long g;           /* the step now (since the transport started) */
@@ -289,6 +295,10 @@ void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats
                int *hit, int *slice, double *where, int *rev, int *rep, int *mute);
 /* the master scatter's settings from the global params, as a track's (tp[P_SC_*]) */
 void msc_params(const float *p, float *tp);
+/* [lock] the master scatter's output as heard: the last whole patterns (up
+ * to max_frames, at most 8 bars) up to the last bar line, into st; frames,
+ * 0 if there's no bar or not that much yet */
+int  eng_msc_capture(Engine *e, float *st, int max_frames);
 #define MSC_TRACK CD_TRACKS    /* its "track" number in sc_decide */
 int  eng_track_synced(const Engine *e, int t);   /* plays in sync now */
 
