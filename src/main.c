@@ -275,6 +275,7 @@ typedef struct {
 
     int page, sel_row[PG_N], scroll[PG_N];
     int lane_h;                             /* the track lanes' height: smaller on a one-screen page */
+    int rows_vis;                           /* list rows on screen */
     char files[MAX_FILES][256]; long fsize[MAX_FILES]; int nfiles;
     int del_confirm; Uint32 confirm_until; int clear_confirm;
 
@@ -1134,7 +1135,7 @@ static void move_sel(int dir)
     }
     G.sel_row[G.page] = s;
     if (s < G.scroll[G.page]) G.scroll[G.page] = s;
-    if (s >= G.scroll[G.page] + ROWS_VISIBLE) G.scroll[G.page] = s - ROWS_VISIBLE + 1;
+    if (s >= G.scroll[G.page] + G.rows_vis) G.scroll[G.page] = s - G.rows_vis + 1;
     G.del_confirm = 0;
 }
 
@@ -1185,7 +1186,7 @@ static void press(int a)
     case A_DOWN: move_sel(1); break;
     case A_LEFT: case A_RIGHT: {
         int dir = a == A_RIGHT ? 1 : -1;
-        if (G.page == PG_FILES || G.page == PG_MIDI) { move_sel(dir * ROWS_VISIBLE); break; }
+        if (G.page == PG_FILES || G.page == PG_MIDI) { move_sel(dir * G.rows_vis); break; }
         if (row >= 0) adjust(row, dir);
         else if (row == ROW_IN_DEV) cycle_device(1, dir);
         else if (row == ROW_OUT_DEV) cycle_device(0, dir);
@@ -2055,8 +2056,9 @@ static void draw(void)
         text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
     }
     int grid = grid_page(G.page);
-    if (grid) {
-        /* a one-screen page: the meters up here, thin */
+    int lst = grid_on && !grid;   /* MIDI, FILES: a list, laid out like the others */
+    if (grid_on) {
+        /* the new layout: the meters up here, thin */
         static const char *const ml[2] = { "IN", "OUT" };
         float pk[2] = { e->in_peak, e->out_peak };
         for (int m = 0; m < 2; m++) {
@@ -2079,8 +2081,8 @@ static void draw(void)
         int dx = px + (int)((G.xy_px + 1) * 0.5f * (pw - 6)), dy = py + (int)((G.xy_py + 1) * 0.5f * (ph - 6));
         fill(bx + 1, by + 1, 4, 4, C_DIM, 255);
         fill(dx, dy, 6, 6, C_ACCENT, 255);
-        if (!grid) text_right(px - 8, 18, C_ACCENT, 0.8f, "X/Y MIX");
-    } else if (!grid) {
+        if (!grid_on) text_right(px - 8, 18, C_ACCENT, 0.8f, "X/Y MIX");
+    } else if (!grid_on) {
         char nm[40]; fit(nm, sizeof nm, G.in_open, 22);
         text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
     }
@@ -2094,19 +2096,19 @@ static void draw(void)
         int below = (G.page == PG_SEQ ? 42 : 0) + 4 + 34 + 8 + 24 + maxr * 50;
         int lh = (724 - below - LANE_Y) / CD_TRACKS - 4;
         G.lane_h = lh < 40 ? 40 : lh > 110 ? 110 : lh;
-    }
+    } else if (lst) G.lane_h = 70;
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
-    int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 0 : 12);
+    int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid_on ? 0 : 12);
 
     /* meters */
     if (G.page == PG_SEQ) draw_master_seq(grid ? ym : 342);
-    else if (!grid) {
+    else if (!grid_on) {
         meter(16, ym, 488, "IN", e->in_peak);
         meter(520, ym, 488, "OUT", e->out_peak);
     }
 
     /* tabs */
-    int ty = grid ? ym + (G.page == PG_SEQ ? 42 : 0) : 384, tbh = grid ? 34 : 38;
+    int ty = grid_on ? ym + (grid && G.page == PG_SEQ ? 42 : 0) : 384, tbh = grid_on ? 34 : 38;
     for (int i = 0; i < PG_N; i++) {
         int x = 16 + i * 142, on = i == G.page;
         fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
@@ -2122,24 +2124,38 @@ static void draw(void)
     /* rows */
     int y0 = 432, rh = 36;
     int n = row_count(G.page);
+    if (lst) {
+        /* titled like the other pages' columns, in cells */
+        int hy = ty + tbh + 8;
+        if (G.page == PG_MIDI) { text(18, hy + 2, C_ACCENT, 0.7f, "CONTROL"); text(602, hy + 2, C_ACCENT, 0.7f, "MIDI"); }
+        else { char t[600]; snprintf(t, sizeof t, "RECORDINGS  in %s", G.rec_dir); char tf[90]; fit(tf, sizeof tf, t, 80);
+               text(18, hy + 2, C_ACCENT, 0.7f, tf); text_right(1006, hy + 2, C_ACCENT, 0.7f, "SIZE"); }
+        fill(16, hy + 18, 992, 2, C_PANEL2, 255);
+        y0 = hy + 24; rh = 34;
+        G.rows_vis = (724 - y0) / rh;
+    } else G.rows_vis = ROWS_VISIBLE;
+    if (G.sel_row[G.page] >= G.scroll[G.page] + G.rows_vis) G.scroll[G.page] = G.sel_row[G.page] - G.rows_vis + 1;
     int sc0 = G.scroll[G.page];
     if (G.page == PG_FILES && n == 0) textf(32, y0 + 10, C_DIM, 1.f, "No recordings yet in %s", G.rec_dir);
-    for (int k = 0; !grid && k < ROWS_VISIBLE && sc0 + k < n; k++) {
+    for (int k = 0; !grid && k < G.rows_vis && sc0 + k < n; k++) {
         int i = sc0 + k, y = y0 + k * rh, on = i == G.sel_row[G.page];
-        if (on) { fill(16, y, 992, rh - 4, C_PANEL2, 255); fill(16, y, 5, rh - 4, C_ACCENT, 255); }
+        float ts = lst ? 0.8f : 1.f;
+        int tyo = lst ? 6 : 4;
+        if (lst) { fill(16, y, 986, rh - 4, on ? C_PANEL2 : C_PANEL, 255); if (on) fill(16, y, 4, rh - 4, C_ACCENT, 255); }
+        else if (on) { fill(16, y, 992, rh - 4, C_PANEL2, 255); fill(16, y, 5, rh - 4, C_ACCENT, 255); }
         char v[300], nm2[120];
         if (G.page == PG_FILES) {
             fit(nm2, sizeof nm2, G.files[i], 60);
-            text(32, y + 4, on ? C_TEXT : C_DIM, 1.f, nm2);
+            text(32, y + tyo, on ? C_TEXT : C_DIM, ts, nm2);
             snprintf(v, sizeof v, "%.1f MB", G.fsize[i] / 1048576.0);
-            text_right(992, y + 4, C_DIM, 1.f, v);
+            text_right(lst ? 990 : 992, y + tyo, C_DIM, ts, v);
             continue;
         }
         if (G.page == PG_MIDI) {
-            text(32, y + 4, on ? C_TEXT : C_DIM, 1.f, G.tg[i].name);
+            text(32, y + tyo, on ? C_TEXT : C_DIM, ts, G.tg[i].name);
             if (G.learn == i) snprintf(v, sizeof v, "%s", (now / 400) & 1 ? "move a control..." : "");
             else bind_str(&G.bind[i], v, sizeof v);
-            text(600, y + 4, G.learn == i ? C_ACCENT : G.bind[i].type ? (on ? C_ACCENT : C_TEXT) : C_DIM, 1.f, v);
+            text(600, y + tyo, G.learn == i ? C_ACCENT : G.bind[i].type ? (on ? C_ACCENT : C_TEXT) : C_DIM, ts, v);
             continue;
         }
         int id = PAGE_ROWS[G.page][i];
@@ -2168,9 +2184,9 @@ static void draw(void)
             text(300, y + 4, id == ROW_DIAG ? (on ? C_ACCENT : C_TEXT) : C_DIM, id == ROW_DIAG ? 0.8f : 1.f, v);
         }
     }
-    if (!grid && n > ROWS_VISIBLE) {
-        int th = ROWS_VISIBLE * rh * ROWS_VISIBLE / n;
-        fill(1010, y0 + sc0 * (ROWS_VISIBLE * rh - th) / (n - ROWS_VISIBLE), 4, th, C_DIM, 200);
+    if (!grid && n > G.rows_vis) {
+        int th = G.rows_vis * rh * G.rows_vis / n;
+        fill(1010, y0 + sc0 * (G.rows_vis * rh - th) / (n - G.rows_vis), 4, th, C_DIM, 200);
     }
 
     /* footer */
@@ -2195,7 +2211,7 @@ static void draw(void)
     if (now < G.toast_until) {
         int w = (int)strlen(G.toast) * FONT_CW + 40; if (w > 980) w = 980;
         int x = (SW - w) / 2;
-        int y = grid ? 150 : 290;
+        int y = grid_on ? 150 : 290;
         fill(x, y, w, 44, C_BG, 235);
         fill(x, y, 4, 44, G.toast_bad ? C_REC : C_ACCENT, 255);
         char t[90]; fit(t, sizeof t, G.toast, 78);
@@ -2424,7 +2440,7 @@ int main(int argc, char **argv)
     snprintf(G.rec_dir, sizeof G.rec_dir, "%s", rd && *rd ? rd : "recordings");
     snprintf(G.cfg_path, sizeof G.cfg_path, "%s", cf && *cf ? cf : "conduit.cfg");
     mkdirs(G.rec_dir);
-    G.lane_h = 66;
+    G.lane_h = 66; G.rows_vis = ROWS_VISIBLE;
     if (getenv("CONDUIT_GRID") && *getenv("CONDUIT_GRID") == '1') { grid_on = 1; grid_apply(); }
 
     if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
