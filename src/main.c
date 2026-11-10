@@ -1541,6 +1541,21 @@ static const char *track_state(int k, Uint32 *c)
     *c = C_DIM; return "EMPTY";
 }
 
+/* the loudest of a few frames from src on, wrapping round the loop */
+static float seq_peak(const Track *t, int ls, int L, double src, double span)
+{
+    float m = 0;
+    int nn = span > 24 ? 24 : span < 1 ? 1 : (int)span;
+    for (int i = 0; i < nn; i++) {
+        long q = (long)(src - ls + span * i / nn) % L; if (q < 0) q += L;
+        q += ls; if (q >= t->len) continue;
+        float l = fabsf(t->buf[2 * q]), r = fabsf(t->buf[2 * q + 1]);
+        if (l > m) m = l;
+        if (r > m) m = r;
+    }
+    return m;
+}
+
 /* the SEQ tab: track k's steps in the bar it's playing, what the pattern
  * does at each and where it is */
 static void draw_seq_lane(int k, int y)
@@ -1548,12 +1563,14 @@ static void draw_seq_lane(int k, int y)
     Track *t = trk(k);
     int on = k == G.sel, beats = (int)G.eng.p[P_BEATS]; if (beats < 1) beats = 1;
     fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
-    int spb = sc_bar_steps(t->p, beats), n = spb;
-    if (t->len > 1) {
-        int ls, le; eng_loop_range(&G.eng, k, &ls, &le);
+    int spb = sc_bar_steps(t->p, beats), n = spb, ls = 0, L = 0;
+    if (t->len > 1 && t->rec_state != ST_REC) {
+        int le; eng_loop_range(&G.eng, k, &ls, &le);
         double bar = t->synced && t->cyc_rec > 0 ? t->cyc_rec : 0;
-        if (le - ls > 0) n = sc_steps(t->p, le - ls, bar, beats);
+        L = le - ls;
+        if (L > 0) n = sc_steps(t->p, L, bar, beats);
     }
+    double SL = L > 0 ? (double)L / n : 0;
     int live = t->playing && t->sc_pos_i >= 0;
     int st = live ? t->sc_step_i : -1;
     long g0 = live ? t->sc_pass_i * n : 0;
@@ -1563,7 +1580,7 @@ static void draw_seq_lane(int k, int y)
     int b0 = st >= 0 ? st / grp * grp : 0, cnt = n - b0 < grp ? n - b0 : grp;
     double step_beats = beats / sc_bar_stepsf(t->p, beats);
     int mode = (int)t->p[P_SC_MODE], cw = LANE_W / (cnt > 0 ? cnt : 1);
-    float sc = cw >= 40 ? 0.7f : 0.55f;
+    float sc = cw >= 40 ? 0.6f : 0.5f;
     for (int j = 0; j < cnt; j++) {
         int idx = b0 + j, hit, slice, rev, rep, mute; double where;
         sc_decide(t->p, k, g0 + idx, idx, n, beats, &hit, &slice, &where, &rev, &rep, &mute);
@@ -1574,9 +1591,27 @@ static void draw_seq_lane(int k, int y)
             fill(x, y + 4, 2, 8, bar_line ? C_TEXT : C_DIM, 200);
         }
         Uint32 c = hit ? C_ACCENT : C_WAVE;
-        int a = mode == SC_OFF ? 40 : mute ? 0 : hit ? 230 : 70;
+        int a = mode == SC_OFF ? 0 : mute ? 0 : hit ? 40 : 14;
         fill(x + 2, cy, cw - 4, ch, C_BG, 255);
         if (a) fill(x + 2, cy, cw - 4, ch, c, (Uint8)a);
+        if (L > 1 && !mute) {
+            /* the audio it plays there: its own, or the slice the pattern puts
+             * there (repeated, reversed, cut short by the gate) */
+            int ww = cw - 4, mid = cy + ch / 2;
+            double piece = SL / (rep > 0 ? rep : 1);
+            float gate = mode == SC_OFF ? 1.f : t->p[P_SC_GATE];
+            col(mode == SC_OFF || !hit ? C_WAVE : C_ACCENT, mode == SC_OFF ? 200 : hit ? 255 : 150);
+            for (int px = 0; px < ww; px++) {
+                double f = (px + 0.5) * SL / ww, f2 = mode == SC_OFF ? f : fmod(f, piece);
+                if (mode != SC_OFF && gate < 0.999f && f2 / piece >= gate) continue;
+                double off = mode != SC_OFF && rev ? piece - f2 : f2;
+                double src = mode == SC_OFF ? ls + idx * SL + f
+                           : where >= 0 ? ls + fmod(where * L + off, (double)L) : ls + slice * SL + off;
+                float pk = seq_peak(t, ls, L, src, SL / ww);
+                int hh = (int)(sqrtf(pk) * (ch / 2 - 1));
+                SDL_RenderDrawLine(G.ren, x + 2 + px, mid - hh, x + 2 + px, mid + hh);
+            }
+        }
         if (idx == st) { fill(x + 2, cy - 6, cw - 4, 4, C_TEXT, 255); fill(x + 2, cy + ch + 2, cw - 4, 2, C_TEXT, 255); }
         /* what it does there */
         char gl[12] = "";
@@ -1586,8 +1621,16 @@ static void draw_seq_lane(int k, int y)
             if (rep > 1) { size_t l = strlen(gl); snprintf(gl + l, sizeof gl - l, "x%d", rep); }
             if (rev) { size_t l = strlen(gl); snprintf(gl + l, sizeof gl - l, "<"); }
         }
-        if (gl[0] && (int)(strlen(gl) * FONT_CW * sc) <= cw - 4)
-            text(x + (cw - (int)(strlen(gl) * FONT_CW * sc)) / 2, cy + (ch - (int)(FONT_CH * sc)) / 2, hit ? C_BG : C_TEXT, sc, gl);
+        if (gl[0] && (int)(strlen(gl) * FONT_CW * sc) <= cw - 6) {
+            int gw = (int)(strlen(gl) * FONT_CW * sc) + 4, gh = (int)(FONT_CH * sc);
+            fill(x + 3, cy + 1, gw, gh, hit ? C_ACCENT : C_PANEL2, 230);
+            text(x + 5, cy + 1, hit ? C_BG : C_TEXT, sc, gl);
+        }
+    }
+    /* the playhead, where it is in the step */
+    if (live && L > 0 && t->pos_i >= ls) {
+        double sp = (t->pos_i - ls) / SL - b0;
+        if (sp >= 0 && sp < cnt) fill(LANE_X + (int)(sp * cw), y + 14, 2, LANE_H - 16, C_TEXT, 200);
     }
     /* how it's set */
     char info[96];
