@@ -983,35 +983,54 @@ static void test_scatter(void)
     T(sc_steps(tp, 48000, 48000, 3) == 3, "scatter: a beat a slice in 3/4");
     tp[P_SC_DIV] = 2;
 
-    /* the pattern: the same each time round, Amount 0 leaves the loop as it is */
+    /* random picks: the same each time round, Amount 0 leaves the loop as it is */
     int same = 1, changed = 0, id = 1;
+    tp[P_SC_TRIG] = SC_TRIG_RANDOM;
     for (int mode = SC_SHUFFLE; mode < SC_N; mode++) {
+        if (mode == SC_CHOP) continue;
         tp[P_SC_MODE] = mode; tp[P_SC_AMOUNT] = 1.f; tp[P_SC_BARS] = 1;   /* 2 bars */
         for (long g = 0; g < 64; g++) {
-            int s1, r1, p1, m1, s2, r2, p2, m2; double w1, w2;
-            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &s1, &w1, &r1, &p1, &m1);
-            sc_decide(tp, 1, g + 32, (int)(g % 16), 16, 4, &s2, &w2, &r2, &p2, &m2);
-            same &= s1 == s2 && w1 == w2 && r1 == r2 && p1 == p2 && m1 == m2;
+            int h1, s1, r1, p1, m1, h2, s2, r2, p2, m2; double w1, w2;
+            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &h1, &s1, &w1, &r1, &p1, &m1);
+            sc_decide(tp, 1, g + 32, (int)(g % 16), 16, 4, &h2, &s2, &w2, &r2, &p2, &m2);
+            same &= h1 == h2 && s1 == s2 && w1 == w2 && r1 == r2 && p1 == p2 && m1 == m2;
             changed |= s1 != (int)(g % 16) || w1 >= 0 || r1 || p1 > 1 || m1;
         }
         tp[P_SC_AMOUNT] = 0.f;
-        for (long g = 0; g < 64 && mode != SC_EUCLID && mode != SC_GRAIN; g++) {
-            int s1, r1, p1, m1; double w1;
-            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &s1, &w1, &r1, &p1, &m1);
-            id &= s1 == (int)(g % 16) && w1 < 0 && !r1 && p1 == 1 && !m1;
+        for (long g = 0; g < 64; g++) {
+            int h1, s1, r1, p1, m1; double w1;
+            sc_decide(tp, 1, g, (int)(g % 16), 16, 4, &h1, &s1, &w1, &r1, &p1, &m1);
+            id &= !h1 && s1 == (int)(g % 16) && w1 < 0 && !r1 && p1 == 1 && !m1;
         }
     }
     T(same && changed && id, "scatter: every mode changes the loop, repeats with the pattern, Amount 0 plays it as it is");
-    /* Euclid: Amount of the bar's steps sound, evenly */
-    tp[P_SC_MODE] = SC_EUCLID; tp[P_SC_AMOUNT] = 0.25f; tp[P_SC_BARS] = 0;
-    int hits = 0, gaps_even = 1, lasthit = -1;
+    /* Euclidean picks: Hits spread evenly over Steps, turned by Rotate, Chop sounds only them */
+    tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_MODE] = SC_CHOP; tp[P_SC_HITS] = 4; tp[P_SC_STEPS] = 0; tp[P_SC_ROT] = 0; tp[P_SC_BARS] = 0;
+    char row[64] = "";
     for (long g = 0; g < 16; g++) {
-        int s1, r1, p1, m1; double w1;
-        sc_decide(tp, 0, g, (int)g, 16, 4, &s1, &w1, &r1, &p1, &m1);
-        if (!m1) { if (lasthit >= 0 && g - lasthit != 4) gaps_even = 0; lasthit = (int)g; hits++; }
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)g, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        row[g] = m1 ? '.' : 'x'; row[g + 1] = 0;
     }
-    snprintf(msg, sizeof msg, "scatter Euclid 25%%: %d of 16 steps sound, every 4th", hits);
-    T(hits == 4 && gaps_even, msg);
+    snprintf(msg, sizeof msg, "scatter Euclid 4 of 16, Chop: %s", row);
+    T(!strcmp(row, "x...x...x...x..."), msg);
+    tp[P_SC_HITS] = 3; tp[P_SC_STEPS] = 8; tp[P_SC_ROT] = 2;
+    for (long g = 0; g < 16; g++) {
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)g, 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        row[g] = h ? 'x' : '.'; row[g + 1] = 0;
+    }
+    snprintf(msg, sizeof msg, "scatter Euclid 3 of 8, rotated 2: %s", row);
+    T(!strcmp(row, "x.x..x..x.x..x.."), msg);   /* x..x..x. turned 2 steps later */
+    tp[P_SC_HITS] = 5; tp[P_SC_STEPS] = 13; tp[P_SC_ROT] = 0;
+    int hits = 0;
+    for (long g = 0; g < 13 * 16; g++) {
+        int h, s1, r1, p1, m1; double w1;
+        sc_decide(tp, 0, g, (int)(g % 16), 16, 4, &h, &s1, &w1, &r1, &p1, &m1);
+        hits += h;
+    }
+    T(hits == 5 * 16, "scatter Euclid 5 of 13 runs on across the bar (a polyrhythm): 5 hits every 13 steps");
+    tp[P_SC_STEPS] = 0;
 
     /* in the engine: a synced 1-bar loop of a sine */
     Engine *e = calloc(1, sizeof *e);
@@ -1027,7 +1046,7 @@ static void test_scatter(void)
     play_bar(e, 48128, &ms, &en0);
     float ms0 = ms;
     Track *t = &e->trk[0];
-    t->p[P_SC_MODE] = SC_SHUFFLE; t->p[P_SC_AMOUNT] = 1.f;
+    t->p[P_SC_MODE] = SC_SHUFFLE; t->p[P_SC_TRIG] = SC_TRIG_RANDOM; t->p[P_SC_AMOUNT] = 1.f;
     play_bar(e, 4 * 48128, &ms, &en);
     snprintf(msg, sizeof msg, "scatter Shuffle: jumps crossfaded, no clicks (largest step %.4f, the plain loop %.4f)", ms, ms0);
     T(ms < 2.5f * ms0 && t->sc_pos_i >= 0, msg);
@@ -1035,10 +1054,10 @@ static void test_scatter(void)
     play_bar(e, 2 * 48128, &ms, &en);
     snprintf(msg, sizeof msg, "scatter Stutter with a 50%% gate: no clicks (largest step %.4f)", ms);
     T(ms < 2.5f * ms0, msg);
-    t->p[P_SC_MODE] = SC_EUCLID; t->p[P_SC_AMOUNT] = 0.25f; t->p[P_SC_GATE] = 1.f;
+    t->p[P_SC_MODE] = SC_CHOP; t->p[P_SC_TRIG] = SC_TRIG_EUCLID; t->p[P_SC_HITS] = 4; t->p[P_SC_GATE] = 1.f;
     play_bar(e, 48128, &ms, &en);
     play_bar(e, 48000, &ms, &en);
-    snprintf(msg, sizeof msg, "scatter Euclid 25%%: a quarter of the bar sounds (energy %.2f of the loop's)", en / en0);
+    snprintf(msg, sizeof msg, "scatter Chop, Euclid 4 of 16: a quarter of the bar sounds (energy %.2f of the loop's)", en / en0);
     T(fabs(en / en0 - 0.25) < 0.04 && ms < 2.5f * ms0, msg);
     /* the steps sit on the bar: the bar's first 16th is the loop's first */
     t->p[P_SC_MODE] = SC_OFF;
@@ -1046,7 +1065,7 @@ static void test_scatter(void)
     snprintf(msg, sizeof msg, "scatter off: back to the loop without a click (largest step %.4f)", ms);
     T(ms < 2.5f * ms0 && t->sc_pos_i == -1, msg);
     /* the saved mix plays the pattern too: 2-bar pattern, so 2 bars */
-    t->p[P_SC_MODE] = SC_EUCLID; t->p[P_SC_BARS] = 1;
+    t->p[P_SC_MODE] = SC_CHOP; t->p[P_SC_BARS] = 1;
     int m; float *b = bounce(e, &m);
     double eb = 0; for (int i = 0; b && i < 2 * m; i++) eb += b[i] * b[i];
     free(b);

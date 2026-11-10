@@ -19,6 +19,7 @@ typedef enum {
     P_VOLUME, P_PAN, P_MUTE, P_FX_SEND, P_VERB_SEND, P_SYNC,
     /* scatter: the loop in slices on the beat, played in a pattern */
     P_SC_MODE, P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR,
+    P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
@@ -48,10 +49,14 @@ enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start
 /* P_IN_PRINT: takes are the input as it comes (its effects only heard), or
  * the input through its effects (printed into the loop) */
 enum { IN_PRINT_DRY = 0, IN_PRINT_WET = 1 };
-/* P_SC_MODE: what the pattern does to a step (with Amount its chance) */
-enum { SC_OFF, SC_SHUFFLE, SC_STUTTER, SC_REVERSE, SC_EUCLID, SC_SCATTER, SC_GRAIN, SC_N };
+/* P_SC_MODE: what the pattern does to the steps it picks (Chop: only they
+ * sound) */
+enum { SC_OFF, SC_SHUFFLE, SC_STUTTER, SC_REVERSE, SC_CHOP, SC_SCATTER, SC_GRAIN, SC_N };
+/* P_SC_TRIG: which steps it picks: by chance (Amount), or a Euclidean
+ * rhythm (Hits spread evenly over Steps, 0: a bar of them, turned by Rotate) */
+enum { SC_TRIG_RANDOM, SC_TRIG_EUCLID };
 /* P_SC_DIV: a step is a beat, an 8th, a 16th or a 32nd; P_SC_BARS: the
- * pattern is 1, 2, 4 or 8 bars long before it repeats */
+ * random choices repeat after 1, 2, 4 or 8 bars */
 
 /* a track's scatter player: where it is in the pattern and what it last read */
 typedef struct {
@@ -132,6 +137,8 @@ typedef struct {
     int writing;               /* the loop was written last frame (overdub or decay) */
     Scatter sc;                /* audio thread */
     volatile int sc_pos_i;     /* where scatter reads (-1: off), for the UI */
+    volatile int sc_step_i;    /* ... the step it's in, and times round the loop */
+    volatile long sc_pass_i;
 } Track;
 
 /* the transport: bars since the start. Internal: the first synced loop is
@@ -250,13 +257,16 @@ void eng_set_buffer(Engine *e, int t, const float *st, int frames); /* [lock] */
  * already taken off le) */
 void eng_loop_range(const Engine *e, int t, int *ls, int *le);
 double eng_rate(const float *tp, float bend);
-/* scatter: the step of a loop window L frames long (bar: the take's frames
- * per bar, 0 if it has none: the window is a bar), and what the pattern
- * does at step index g (passes * steps + step): which slice (or for Grain
- * where, 0..1), backwards, how many repeats, muted */
+/* scatter: the steps in a loop window L frames long (bar: the take's frames
+ * per bar, 0 if it has none: the window is a bar), the steps in a bar, the
+ * Euclidean cycle, and what the pattern does at step index g (passes *
+ * steps + step): picked or not, which slice (or for Grain where, 0..1),
+ * backwards, how many repeats, muted */
 int  sc_steps(const float *tp, int L, double bar, int beats);
+int  sc_bar_steps(const float *tp, int beats);
+int  sc_cycle(const float *tp, int beats);
 void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
-               int *slice, double *where, int *rev, int *rep, int *mute);
+               int *hit, int *slice, double *where, int *rev, int *rep, int *mute);
 int  eng_track_synced(const Engine *e, int t);   /* plays in sync now */
 
 /* Offline mixdown from bar 1: the mix (through the master FX) and each

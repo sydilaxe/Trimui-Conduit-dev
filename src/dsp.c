@@ -31,6 +31,7 @@ void eng_default_track(float *tp)
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
     tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
     tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = 2.f; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
+    tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_HITS] = 5.f; tp[P_SC_STEPS] = 0.f; tp[P_SC_ROT] = 0.f;
 }
 
 void eng_default_params(float *p)
@@ -597,9 +598,20 @@ static inline void raw_at(const float *buf, int len, double p, float *l, float *
 
 /* ------------------------------------------------------------ scatter */
 
+int sc_bar_steps(const float *tp, int beats)
+{
+    return (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);
+}
+
+int sc_cycle(const float *tp, int beats)
+{
+    int e = clampi((int)tp[P_SC_STEPS], 0, 64);
+    return e ? e : sc_bar_steps(tp, beats);
+}
+
 int sc_steps(const float *tp, int L, double bar, int beats)
 {
-    int spb = (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);   /* steps per bar */
+    int spb = sc_bar_steps(tp, beats);
     double step = (bar > 0 ? bar : (double)L) / spb;
     long n = step > 0 ? lround(L / step) : 1;
     return n < 1 ? 1 : n > 4096 ? 4096 : (int)n;
@@ -612,55 +624,56 @@ static uint32_t sc_hash(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
     return x;
 }
 
-/* the pattern: the same step of the pattern does the same thing every time
- * round, and Variation picks another pattern */
+/* the pattern: the steps it picks (by chance, or a Euclidean rhythm) and
+ * what it does to them. The random choices repeat after Pattern length,
+ * Variation picks others; the Euclidean rhythm runs on in its own cycle
+ * (Steps), so against the bar it can be a polyrhythm. */
 void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
-               int *slice, double *where, int *rev, int *rep, int *mute)
+               int *hit, int *slice, double *where, int *rev, int *rep, int *mute)
 {
     int mode = clampi((int)tp[P_SC_MODE], 0, SC_N - 1);
     float a = clampf(tp[P_SC_AMOUNT], 0.f, 1.f);
-    int spb = (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);
-    long patlen = (long)spb << clampi((int)tp[P_SC_BARS], 0, 3);
+    long patlen = (long)sc_bar_steps(tp, beats) << clampi((int)tp[P_SC_BARS], 0, 3);
     long idx = g % patlen; if (idx < 0) idx += patlen;
     uint32_t var = (uint32_t)clampi((int)tp[P_SC_VAR], 0, 999);
 #define R(salt) (sc_hash(var, (uint32_t)track, (uint32_t)idx, (salt)) * (1.0 / 4294967296.0))
+    if (tp[P_SC_TRIG] >= 0.5f) {
+        /* Euclidean: Hits as evenly as they go over the cycle, from its first
+         * step (turned later by Rotate) */
+        int e = sc_cycle(tp, beats), k = clampi((int)tp[P_SC_HITS], 0, e), rot = clampi((int)tp[P_SC_ROT], 0, 63) % e;
+        long i = ((g - rot) % e + e) % e;
+        *hit = (int)((i * k) % e) < k;
+    } else *hit = R(1) < a;
     *slice = st; *where = -1; *rev = 0; *rep = 1; *mute = 0;
-    switch (mode) {
+    if (mode == SC_CHOP) *mute = !*hit;
+    else if (*hit) switch (mode) {
     case SC_SHUFFLE:
-        if (R(1) < a) *slice = (int)(R(2) * nsteps);
+        *slice = (int)(R(2) * nsteps);
         break;
-    case SC_STUTTER:
-        if (R(1) < a) {
-            static const int reps[] = { 2, 2, 3, 4, 4, 6, 8 };
-            *rep = reps[(int)(R(2) * 7)];
-            if (R(3) < 0.3) *slice = (st + nsteps - 1) % nsteps;   /* hold the last one */
-        }
-        break;
-    case SC_REVERSE:
-        if (R(1) < a) *rev = 1;
-        break;
-    case SC_EUCLID: {
-        /* Amount of the bar's steps sound, spread as evenly as they go */
-        int k = (int)lroundf(a * spb); k = k < 1 ? 1 : k > spb ? spb : k;
-        int rot = (int)(sc_hash(var, (uint32_t)track, 0, 9) % (uint32_t)spb);
-        *mute = ((idx % spb + rot) * k) % spb >= k;
+    case SC_STUTTER: {
+        static const int reps[] = { 2, 2, 3, 4, 4, 6, 8 };
+        *rep = reps[(int)(R(2) * 7)];
+        if (R(3) < 0.3) *slice = (st + nsteps - 1) % nsteps;   /* hold the last one */
         break;
     }
+    case SC_REVERSE:
+        *rev = 1;
+        break;
     case SC_SCATTER:
-        if (R(1) < a) switch ((int)(R(4) * 6)) {
-            case 0: *slice = (int)(R(2) * nsteps); break;
-            case 1: *rep = 2; break;
-            case 2: *rep = 4; break;
-            case 3: *rev = 1; break;
-            case 4: *slice = (int)(R(2) * nsteps); *rev = 1; break;
-            default: *mute = 1; break;
+        switch ((int)(R(4) * 6)) {
+        case 0: *slice = (int)(R(2) * nsteps); break;
+        case 1: *rep = 2; break;
+        case 2: *rep = 4; break;
+        case 3: *rev = 1; break;
+        case 4: *slice = (int)(R(2) * nsteps); *rev = 1; break;
+        default: *mute = 1; break;
         }
         break;
     case SC_GRAIN: {
         static const int reps[] = { 1, 1, 2, 4 };
-        if (R(1) < a) *where = R(2);
+        *where = R(2);
         *rep = reps[(int)(R(3) * 4)];
-        *rev = R(5) < 0.25 * a;
+        *rev = R(5) < 0.25;
         break;
     }
     }
@@ -686,8 +699,8 @@ static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int le
         if (speed >= 0 ? st < s->step : st > s->step) s->pass++;
         s->step = st;
     }
-    int slice, rev, rep, mute; double where;
-    sc_decide(tp, k, s->pass * n + st, st, n, beats, &slice, &where, &rev, &rep, &mute);
+    int hit, slice, rev, rep, mute; double where;
+    sc_decide(tp, k, s->pass * n + st, st, n, beats, &hit, &slice, &where, &rev, &rep, &mute);
     double piece = SL / rep, f2 = fmod(f, piece);
     double off = rev ? piece - f2 : f2;
     double src = where >= 0 ? ls + fmod(where * L + off, (double)L) : ls + slice * SL + off;
@@ -1126,6 +1139,7 @@ void eng_render(Engine *e, float *out, int frames)
         Track *t = &e->trk[k];
         t->pos_i = (int)t->pos;
         t->sc_pos_i = t->sc.active ? (int)t->sc.last : -1;
+        t->sc_step_i = t->sc.step; t->sc_pass_i = t->sc.pass;
         if (t->writing || t->rec_state == ST_REC) t->version++;
     }
     float dec = powf(0.9995f, (float)frames);
@@ -1307,9 +1321,13 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
             double bars = L / (t->cyc_rec * user);
             long qq = lround(bars * 4);
             if (qq >= 1 && fabs(qq / 4.0 - bars) < 0.01) q = q ? q / gcdl(q, qq) * qq : qq;
-            if (tp[P_SC_MODE] >= 0.5f) {   /* the whole scatter pattern */
+            if (tp[P_SC_MODE] >= 0.5f) {
+                /* the whole scatter pattern: its random part, and its
+                 * Euclidean cycle when that's a whole number of quarter bars */
                 long pq = 4L << clampi((int)tp[P_SC_BARS], 0, 3);
                 q = q ? q / gcdl(q, pq) * pq : pq;
+                int beats = (int)m->p[P_BEATS], spb = sc_bar_steps(tp, beats), ec = sc_cycle(tp, beats);
+                if (tp[P_SC_TRIG] >= 0.5f && (ec * 4) % spb == 0) { long eq = ec * 4L / spb; q = q / gcdl(q, eq) * eq; }
             }
             else if (bars * cyc > longest) longest = bars * cyc;
             if (q > 4 * 256) q = 4 * 256;
