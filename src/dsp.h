@@ -34,6 +34,10 @@ typedef enum {
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
     /* the live input through the effects */
     P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
+    /* master scatter: the whole mix (after the FX, before the live input),
+     * its settings as a track's P_SC_* (same order) */
+    P_MSC_MODE, P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_VAR,
+    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
     P_COUNT
@@ -173,6 +177,17 @@ typedef struct {
     int snap_beats, snap_run, snap_follow;
 } Transport;
 
+/* master scatter: the mix as it was, the last 21 s, and its player. The
+ * steps it doesn't change play the mix as it is; the ones it changes play
+ * from the bar before (or, a repeat, from the start of their own step). */
+#define MSC_RING (1 << 20)
+typedef struct {
+    float *ring;               /* stereo, MSC_RING frames, indexed by frame count */
+    Scatter s;
+    volatile int pos_ago;      /* frames back it reads now (0: the mix as it is, -1: off), for the UI */
+    volatile long g;           /* the step now (since the transport started) */
+} MScat;
+
 #define CD_EVQ 1024
 typedef struct { uint8_t msg; double t, pos, bpm; } ClockEv; /* pos, bpm: a link position (msg 0xF0 / 0xF1) */
 
@@ -218,6 +233,7 @@ typedef struct {
     int in_print;              /* the print mode the input chain last ran in */
     FxState fx_in;
     Verb verb_in;
+    MScat msc;
 } Engine;
 
 int  eng_init(Engine *e, int max_seconds);   /* per track */
@@ -271,6 +287,9 @@ double sc_bar_stepsf(const float *tp, int beats);   /* exact: a dotted 8th is 5 
 int  sc_cycle(const float *tp, int beats);
 void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
                int *hit, int *slice, double *where, int *rev, int *rep, int *mute);
+/* the master scatter's settings from the global params, as a track's (tp[P_SC_*]) */
+void msc_params(const float *p, float *tp);
+#define MSC_TRACK CD_TRACKS    /* its "track" number in sc_decide */
 int  eng_track_synced(const Engine *e, int t);   /* plays in sync now */
 
 /* Offline mixdown from bar 1: the mix (through the master FX) and each
@@ -284,6 +303,8 @@ typedef struct {
     int on[CD_TRACKS], ls[CD_TRACKS], le[CD_TRACKS], xf[CD_TRACKS];
     float gl[CD_TRACKS], gr[CD_TRACKS], mute[CD_TRACKS], send[CD_TRACKS], vsend[CD_TRACKS], dc[CD_TRACKS][2];
     Scatter sc[CD_TRACKS];
+    MScat msc;                 /* ring only while master scatter is on */
+    uint64_t msc_f;            /* frames through it, the thrown-away first pass included */
     FxState fx;
     Verb verb;
 } Mixdown;

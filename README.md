@@ -21,7 +21,8 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Scatter and SEQ:** cut a track's loop into slices on the beat (from a
   bar to a 64th, with triplets and dotted values) and play them in a pattern: a Euclidean rhythm (or
   chance) picks steps to shuffle, stutter, reverse, chop or turn into
-  grains. The SEQ tab shows each track's steps like a step sequencer. It
+  grains, per track or over the whole mix. The SEQ tab shows the steps like a
+  step sequencer. It
   follows the bar, so it stays with MIDI clock and linked Bricks.
 - **Live input through the effects:** send what you're playing to the Bloom
   reverb and the FX as you play, to hear them live, and choose whether takes
@@ -268,6 +269,29 @@ switched off because the pattern is already in it. Scatter's mode and
 Variation start Off and 0 each time; the rest is remembered per track. MIDI
 can map every setting, as well as *Scatter on/off* and *Scatter: next
 variation*.
+
+### Master scatter
+
+Scatter can also work on the **whole mix**, like a DJ mixer's: all four
+tracks with their FX and reverb, but not the live input. Its settings are the
+**MASTER SCATTER** rows at the bottom of the SEQ tab. They are the same as a
+track's, and it can run on top of the tracks' own scatter. While the SEQ tab
+is open, a **MIX** strip under the four lanes, where the meters usually are,
+shows its steps in the bar. With one of the master rows selected, SELECT + L1
+switches it on and off and SELECT + R1 steps to the next variation. MIDI has
+*Master scatter on/off* and *Master scatter: next variation*.
+
+The mix isn't a loop, so master scatter keeps the last 21 seconds of it and
+plays from there:
+
+- Steps it doesn't pick play the mix as it is.
+- A repeat (stutter) replays the start of its own step.
+- The other changes (another slice, backwards, a grain) play from the bar
+  before.
+
+It needs a bar to follow: a synced loop, MIDI clock or a leading Brick. Until
+the transport runs it passes the mix through ("WAITS"). The saved mix and
+Resample include it, and Resample switches it off afterwards.
 
 ### The live input through the effects
 

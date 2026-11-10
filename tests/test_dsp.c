@@ -1085,6 +1085,53 @@ static void test_scatter(void)
     eng_free(e); free(e);
 }
 
+/* Master scatter: the whole mix in slices of the bar, from what was just
+ * heard; the saved mix has it too */
+static void test_master_scatter(void)
+{
+    char msg[200];
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 4);
+    int n = 48000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 220, 0.4f);
+    eng_set_buffer(e, 0, st, n);
+    fill_sine(st, n, 330, 0.2f);
+    eng_set_buffer(e, 1, st, n);
+    e->trk[0].p[P_FX_SEND] = 0; e->trk[1].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0); eng_play_toggle(e, 1);
+    float ms, ms0; double en0, en;
+    play_bar(e, 48128, &ms, &en0);
+    play_bar(e, 48000, &ms0, &en0);
+    e->p[P_MSC_MODE] = SC_SHUFFLE; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 1.f;
+    play_bar(e, 4 * 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter Shuffle: the mix in slices from the bar before, no clicks (largest step %.4f, plain %.4f), reading %d frames back",
+             ms, ms0, e->msc.pos_ago);
+    T(ms < 2.5f * ms0 && e->msc.pos_ago >= 0 && fabs(en / (4 * en0) - 1) < 0.1, msg);
+    e->p[P_MSC_MODE] = SC_CHOP; e->p[P_MSC_TRIG] = SC_TRIG_EUCLID; e->p[P_MSC_HITS] = 4;
+    play_bar(e, 48000, &ms, &en);
+    play_bar(e, 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter Chop 4 of 16: a quarter of the mix sounds (energy %.2f)", en / en0);
+    T(fabs(en / en0 - 0.25) < 0.04 && ms < 2.5f * ms0, msg);
+    /* the tracks' own scatter and the master's together */
+    e->trk[1].p[P_SC_MODE] = SC_STUTTER; e->trk[1].p[P_SC_TRIG] = SC_TRIG_RANDOM; e->trk[1].p[P_SC_AMOUNT] = 1.f;
+    play_bar(e, 2 * 48000, &ms, &en);
+    snprintf(msg, sizeof msg, "a track's scatter under the master's: no clicks (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0, msg);
+    e->trk[1].p[P_SC_MODE] = SC_OFF;
+    int m; float *b = bounce(e, &m);
+    double eb = 0; for (int i = 0; b && i < 2 * m; i++) eb += b[i] * b[i];
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix has the master scatter (%d frames, energy %.2f of the mix)", m, eb / en0);
+    T(m == 48000 && fabs(eb / en0 - 0.25) < 0.05, msg);
+    e->p[P_MSC_MODE] = SC_OFF;
+    play_bar(e, 4096, &ms, &en);
+    snprintf(msg, sizeof msg, "master scatter off: the mix as it is, without a click (largest step %.4f)", ms);
+    T(ms < 2.5f * ms0 && e->msc.pos_ago == -1, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
 /* The X/Y mix's gain sits on top of the volume, in what's heard and in the
  * saved mix, and fades rather than steps */
 static void test_xy_gain(void)
@@ -1432,6 +1479,7 @@ int main(void)
     test_xy_gain();
     test_live_fx();
     test_scatter();
+    test_master_scatter();
     test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");
