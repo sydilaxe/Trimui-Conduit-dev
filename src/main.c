@@ -59,7 +59,9 @@ static const char *const L_START[] = { "Follow", "Ignore (the clock only)" };
 static const char *const L_SCAT[] = { "Off", "Shuffle", "Stutter", "Reverse", "Chop (only the picked steps sound)",
                                       "Scatter (all of them)", "Grain" };
 static const char *const L_SCTRIG[] = { "Random (Amount)", "Euclidean (Hits, Steps, Rotate)" };
-static const char *const L_SCDIV[] = { "1/4 (beats)", "1/8", "1/16", "1/32" };
+static const char *const L_SCDIV[SC_SIZES] = { "1 bar", "1/2", "1/4 (a beat)", "1/4 triplet", "1/8 dotted", "1/8",
+                                               "1/8 triplet", "1/16 dotted", "1/16", "1/16 triplet", "1/32", "1/64" };
+static const char *const L_SCDIV_SHORT[SC_SIZES] = { "1 bar", "1/2", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32", "1/64" };
 static const char *const L_SCBARS[] = { "1 bar", "2 bars", "4 bars", "8 bars" };
 static const char *const L_PRINT[] = { "Dry (FX heard only)", "With the live FX" };
 
@@ -78,7 +80,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_VERB_SEND]  = { "Reverb send", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_SYNC]       = { "Length", 0, 1, 1, 1, K_ENUM, L_LEN },
     [P_SC_MODE]    = { "Scatter", 0, SC_N - 1, 1, 1, K_ENUM, L_SCAT },
-    [P_SC_DIV]     = { "Slice", 0, 3, 1, 1, K_ENUM, L_SCDIV },
+    [P_SC_DIV]     = { "Slice size", 0, SC_SIZES - 1, 1, 1, K_ENUM, L_SCDIV },
     [P_SC_AMOUNT]  = { "Amount", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_SC_GATE]    = { "Gate", 0.05f, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_SC_BARS]    = { "Pattern length", 0, 3, 1, 1, K_ENUM, L_SCBARS },
@@ -136,7 +138,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_LOOP_START] = "win_start", [P_LOOP_END] = "win_end", [P_PITCH] = "pitch", [P_FINE] = "fine",
     [P_REVERSE] = "reverse", [P_DECAY] = "loop_decay", [P_DECAY_MODE] = "decay_mode", [P_VOLUME] = "volume",
     [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length",
-    [P_SC_MODE] = "scatter", [P_SC_DIV] = "scatter_slice", [P_SC_AMOUNT] = "scatter_amount", [P_SC_GATE] = "scatter_gate",
+    [P_SC_MODE] = "scatter", [P_SC_DIV] = "scatter_slice_size", [P_SC_AMOUNT] = "scatter_amount", [P_SC_GATE] = "scatter_gate",
     [P_SC_BARS] = "scatter_bars", [P_SC_VAR] = "scatter_variation", [P_SC_TRIG] = "scatter_picks",
     [P_SC_HITS] = "scatter_hits", [P_SC_STEPS] = "scatter_steps", [P_SC_ROT] = "scatter_rotate", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
@@ -161,7 +163,7 @@ enum { PG_TRACK, PG_SEQ, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "SEQ", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
 static const int PAGE_ROWS[PG_N][40] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
-    { P_SC_MODE, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_DIV, P_SC_GATE, P_SC_BARS, P_SC_VAR, ROW_END },
+    { P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR, ROW_END },
     { ROW_H_TONE, P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
@@ -1416,15 +1418,22 @@ static void draw_seq_lane(int k, int y)
     int live = t->playing && t->sc_pos_i >= 0;
     int st = live ? t->sc_step_i : -1;
     long g0 = live ? t->sc_pass_i * n : 0;
-    int b0 = st >= 0 ? st / spb * spb : 0, cnt = n - b0 < spb ? n - b0 : spb;
-    if (cnt > 64) cnt = 64;
-    int mode = (int)t->p[P_SC_MODE], cw = LANE_W / (cnt > 0 ? cnt : 1), per_beat = spb / beats;
+    /* a bar's steps (at least 4, or the loop's, when they're long), up to 64 */
+    int grp = spb >= 4 ? spb : n < 4 ? n : 4;
+    if (grp > 64) grp = 64;
+    int b0 = st >= 0 ? st / grp * grp : 0, cnt = n - b0 < grp ? n - b0 : grp;
+    double step_beats = beats / sc_bar_stepsf(t->p, beats);
+    int mode = (int)t->p[P_SC_MODE], cw = LANE_W / (cnt > 0 ? cnt : 1);
     float sc = cw >= 40 ? 0.7f : 0.55f;
     for (int j = 0; j < cnt; j++) {
         int idx = b0 + j, hit, slice, rev, rep, mute; double where;
         sc_decide(t->p, k, g0 + idx, idx, n, beats, &hit, &slice, &where, &rev, &rep, &mute);
         int x = LANE_X + j * cw, cy = y + 20, ch = LANE_H - 26;
-        if (per_beat > 0 && j % per_beat == 0) fill(x, y + 4, 2, 8, C_DIM, 200);   /* the beats */
+        double sb = idx * step_beats;   /* the steps that start on a beat (a bar line brighter) */
+        if (fabs(sb - floor(sb + 0.5)) < 1e-6) {
+            int bar_line = ((long)floor(sb + 0.5)) % beats == 0;
+            fill(x, y + 4, 2, 8, bar_line ? C_TEXT : C_DIM, 200);
+        }
         Uint32 c = hit ? C_ACCENT : C_WAVE;
         int a = mode == SC_OFF ? 40 : mute ? 0 : hit ? 230 : 70;
         fill(x + 2, cy, cw - 4, ch, C_BG, 255);
@@ -1450,7 +1459,7 @@ static void draw_seq_lane(int k, int y)
         snprintf(pick, sizeof pick, "euclid %d/%d", h, e);
         if ((int)t->p[P_SC_ROT] % e) { size_t l = strlen(pick); snprintf(pick + l, sizeof pick - l, " +%d", (int)t->p[P_SC_ROT] % e); }
     } else snprintf(pick, sizeof pick, "random %.0f%%", t->p[P_SC_AMOUNT] * 100);
-    snprintf(info, sizeof info, "%s  %s  %s  var %d%s", sn[mode], pick, (int)t->p[P_SC_DIV] == 0 ? "1/4" : L_SCDIV[(int)t->p[P_SC_DIV]],
+    snprintf(info, sizeof info, "%s  %s  %s  var %d%s", sn[mode], pick, L_SCDIV_SHORT[(int)t->p[P_SC_DIV]],
              (int)t->p[P_SC_VAR], n > spb ? (live ? "  (this bar)" : "") : "");
     int iw = (int)(strlen(info) * FONT_CW * 0.65f);
     fill(LANE_X + LANE_W - 10 - iw, y, iw + 10, (int)(FONT_CH * 0.65f) + 2, on ? C_PANEL2 : C_PANEL, 255);
@@ -1533,7 +1542,7 @@ static void draw_lane(int k)
             if (t->p[P_SC_MODE] >= 0.5f) {
                 static const char *const sn[SC_N] = { "", "shuffle", "stutter", "reverse", "euclid", "scatter", "grain" };
                 size_t fl = strlen(fx);
-                snprintf(fx + fl, sizeof fx - fl, "%s %s  ", sn[(int)t->p[P_SC_MODE]], (int)t->p[P_SC_DIV] == 0 ? "1/4" : L_SCDIV[(int)t->p[P_SC_DIV]]);
+                snprintf(fx + fl, sizeof fx - fl, "%s %s  ", sn[(int)t->p[P_SC_MODE]], L_SCDIV_SHORT[(int)t->p[P_SC_DIV]]);
             }
             snprintf(info, sizeof info, "%s%s  %s%s%svol %.0f%%  %s", len, eng_track_synced(&G.eng, k) ? "" : " free",
                      t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", fx, t->p[P_VOLUME] * 100, pn);
@@ -1800,8 +1809,8 @@ static int selftest(const char *shot_dir)
     G.sel = 1;
     set_held(A_SEL, 1); set_held(A_L1, 1); set_held(A_L1, 0); set_held(A_R1, 1); set_held(A_R1, 0); set_held(A_SEL, 0);
     CHECK(t2->p[P_SC_MODE] == SC_SCATTER && t2->p[P_SC_VAR] == 1 && G.running, "SELECT + L1 / R1: scatter on, the next variation");
-    t2->p[P_SC_AMOUNT] = 1.f;
-    G.page = PG_SEQ; G.sel_row[PG_SEQ] = 2;
+    t2->p[P_SC_AMOUNT] = 1.f; t2->p[P_SC_DIV] = SC_SZ_8T;
+    G.page = PG_SEQ; G.sel_row[PG_SEQ] = 1;
     WAITMS(600);
     CHECK(t2->sc_pos_i >= 0 && e->out_peak > 0.01f, "scatter plays track 2's slices");
     SHOT("shot_scatter");

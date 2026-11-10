@@ -976,12 +976,22 @@ static void test_scatter(void)
 {
     char msg[200];
     float tp[P_TRACK_N]; eng_default_track(tp);
-    tp[P_SC_DIV] = 2;                                   /* 16ths */
+    tp[P_SC_DIV] = SC_SZ_16;
     T(sc_steps(tp, 48000, 48000, 4) == 16 && sc_steps(tp, 96000, 48000, 4) == 32 && sc_steps(tp, 30000, 0, 4) == 16
       && sc_steps(tp, 12000, 48000, 4) == 4, "scatter: 16 slices a bar of 4 beats (2 bars 32, a quarter bar 4, no bar: the window)");
-    tp[P_SC_DIV] = 0;
+    tp[P_SC_DIV] = SC_SZ_4;
     T(sc_steps(tp, 48000, 48000, 3) == 3, "scatter: a beat a slice in 3/4");
-    tp[P_SC_DIV] = 2;
+    tp[P_SC_DIV] = SC_SZ_BAR;
+    T(sc_steps(tp, 96000, 48000, 4) == 2 && sc_steps(tp, 30000, 0, 4) == 1, "scatter: a bar a slice");
+    tp[P_SC_DIV] = SC_SZ_2;
+    T(sc_steps(tp, 48000, 48000, 4) == 2, "scatter: half notes");
+    tp[P_SC_DIV] = SC_SZ_8T;
+    T(sc_steps(tp, 48000, 48000, 4) == 12 && sc_bar_steps(tp, 4) == 12, "scatter: 8th triplets, 12 a bar");
+    tp[P_SC_DIV] = SC_SZ_16D;    /* 3/64 of a bar: 64 of them in 3 bars */
+    T(sc_steps(tp, 144000, 48000, 4) == 32 && fabs(sc_bar_stepsf(tp, 4) - 32.0 / 3) < 1e-9, "scatter: dotted 16ths, 32 in 3 bars");
+    tp[P_SC_DIV] = SC_SZ_64;
+    T(sc_steps(tp, 48000, 48000, 4) == 64, "scatter: 64ths");
+    tp[P_SC_DIV] = SC_SZ_16;
 
     /* random picks: the same each time round, Amount 0 leaves the loop as it is */
     int same = 1, changed = 0, id = 1;

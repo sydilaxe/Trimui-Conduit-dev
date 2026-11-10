@@ -55,8 +55,11 @@ enum { SC_OFF, SC_SHUFFLE, SC_STUTTER, SC_REVERSE, SC_CHOP, SC_SCATTER, SC_GRAIN
 /* P_SC_TRIG: which steps it picks: by chance (Amount), or a Euclidean
  * rhythm (Hits spread evenly over Steps, 0: a bar of them, turned by Rotate) */
 enum { SC_TRIG_RANDOM, SC_TRIG_EUCLID };
-/* P_SC_DIV: a step is a beat, an 8th, a 16th or a 32nd; P_SC_BARS: the
- * random choices repeat after 1, 2, 4 or 8 bars */
+/* P_SC_DIV: the slice (a step) as a note value, from a bar to a 64th, with
+ * triplets and dotted ones; P_SC_BARS: the random choices repeat after 1,
+ * 2, 4 or 8 bars */
+enum { SC_SZ_BAR, SC_SZ_2, SC_SZ_4, SC_SZ_4T, SC_SZ_8D, SC_SZ_8, SC_SZ_8T, SC_SZ_16D, SC_SZ_16, SC_SZ_16T,
+       SC_SZ_32, SC_SZ_64, SC_SIZES };
 
 /* a track's scatter player: where it is in the pattern and what it last read */
 typedef struct {
@@ -263,7 +266,8 @@ double eng_rate(const float *tp, float bend);
  * steps + step): picked or not, which slice (or for Grain where, 0..1),
  * backwards, how many repeats, muted */
 int  sc_steps(const float *tp, int L, double bar, int beats);
-int  sc_bar_steps(const float *tp, int beats);
+int  sc_bar_steps(const float *tp, int beats);      /* rounded */
+double sc_bar_stepsf(const float *tp, int beats);   /* exact: a dotted 8th is 5 1/3 a bar of 4 */
 int  sc_cycle(const float *tp, int beats);
 void sc_decide(const float *tp, int track, long g, int st, int nsteps, int beats,
                int *hit, int *slice, double *where, int *rev, int *rep, int *mute);

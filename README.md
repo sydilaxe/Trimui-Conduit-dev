@@ -18,8 +18,8 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Input:** any capture device SDL sees. USB devices are picked
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
-- **Scatter and SEQ:** cut a track's loop into slices on the beat (beats,
-  8ths, 16ths or 32nds) and play them in a pattern: a Euclidean rhythm (or
+- **Scatter and SEQ:** cut a track's loop into slices on the beat (from a
+  bar to a 64th, with triplets and dotted values) and play them in a pattern: a Euclidean rhythm (or
   chance) picks steps to shuffle, stutter, reverse, chop or turn into
   grains. The SEQ tab shows each track's steps like a step sequencer. It
   follows the bar, so it stays with MIDI clock and linked Bricks.
@@ -220,8 +220,12 @@ playing, as on a step sequencer:
 - The top line shows the mode, how steps are picked, the slice size and the
   variation.
 
-The slices are steps of the bar: **Slice** is 1/4 (a beat), 1/8, 1/16 or
-1/32, so a 1-bar loop in 4/4 at 1/16 has 16. They follow the track's
+The slices are steps of the bar. **Slice size** is a note value: 1 bar, 1/2,
+1/4 (a beat), 1/8, 1/16, 1/32 or 1/64, the triplets (1/4, 1/8 and 1/16
+triplet) and the dotted values (1/8 and 1/16 dotted). A 1-bar loop in 4/4 has
+16 slices at 1/16 and 12 at 1/8 triplets. Dotted slices don't fit a bar
+evenly (5⅓ dotted 8ths a bar), so they run across the bar lines and come
+back round with it every 3 bars. They follow the track's
 playhead, which follows the bar, so with **Sync to: MIDI clock** or a
 leading Brick the slices land on its beat at any tempo. A *Free* track's
 window counts as one bar.

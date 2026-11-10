@@ -30,7 +30,7 @@ void eng_default_track(float *tp)
     tp[P_LOOP_START] = 0.f; tp[P_LOOP_END] = 1.f;
     tp[P_DECAY] = 0.02f; tp[P_DECAY_MODE] = 0.f;
     tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
-    tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = 2.f; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
+    tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = SC_SZ_16; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
     tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_HITS] = 5.f; tp[P_SC_STEPS] = 0.f; tp[P_SC_ROT] = 0.f;
 }
 
@@ -598,9 +598,20 @@ static inline void raw_at(const float *buf, int len, double p, float *l, float *
 
 /* ------------------------------------------------------------ scatter */
 
+/* each slice size in beats (0: a bar) */
+static const double SC_SIZE_BEATS[SC_SIZES] = { 0, 2, 1, 2.0 / 3, 0.75, 0.5, 1.0 / 3, 0.375, 0.25, 1.0 / 6, 0.125, 0.0625 };
+
+double sc_bar_stepsf(const float *tp, int beats)
+{
+    double b = SC_SIZE_BEATS[clampi((int)tp[P_SC_DIV], 0, SC_SIZES - 1)];
+    int nb = beats < 1 ? 1 : beats;
+    return b > 0 ? nb / b : 1.0;
+}
+
 int sc_bar_steps(const float *tp, int beats)
 {
-    return (beats < 1 ? 1 : beats) << clampi((int)tp[P_SC_DIV], 0, 3);
+    long n = lround(sc_bar_stepsf(tp, beats));
+    return n < 1 ? 1 : (int)n;
 }
 
 int sc_cycle(const float *tp, int beats)
@@ -611,7 +622,7 @@ int sc_cycle(const float *tp, int beats)
 
 int sc_steps(const float *tp, int L, double bar, int beats)
 {
-    int spb = sc_bar_steps(tp, beats);
+    double spb = sc_bar_stepsf(tp, beats);
     double step = (bar > 0 ? bar : (double)L) / spb;
     long n = step > 0 ? lround(L / step) : 1;
     return n < 1 ? 1 : n > 4096 ? 4096 : (int)n;
@@ -1326,8 +1337,10 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
                  * Euclidean cycle when that's a whole number of quarter bars */
                 long pq = 4L << clampi((int)tp[P_SC_BARS], 0, 3);
                 q = q ? q / gcdl(q, pq) * pq : pq;
-                int beats = (int)m->p[P_BEATS], spb = sc_bar_steps(tp, beats), ec = sc_cycle(tp, beats);
-                if (tp[P_SC_TRIG] >= 0.5f && (ec * 4) % spb == 0) { long eq = ec * 4L / spb; q = q / gcdl(q, eq) * eq; }
+                int beats = (int)m->p[P_BEATS], ec = sc_cycle(tp, beats);
+                double eqf = ec * 4.0 / sc_bar_stepsf(tp, beats);
+                long eq = lround(eqf);
+                if (tp[P_SC_TRIG] >= 0.5f && eq >= 1 && fabs(eqf - eq) < 1e-6) q = q / gcdl(q, eq) * eq;
             }
             else if (bars * cyc > longest) longest = bars * cyc;
             if (q > 4 * 256) q = 4 * 256;
