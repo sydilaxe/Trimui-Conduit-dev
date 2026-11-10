@@ -201,22 +201,23 @@ static int PAGE_ROWS[PG_N][40] = {
 #define GPAIR (-150)   /* the next two share a row */
 enum { GT_WINDOW, GT_PITCH, GT_LEVEL, GT_SENDS, GT_TSC_PAT, GT_TSC_SHAPE, GT_MSC_PAT, GT_MSC_SHAPE,
        GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2, GT_N };
-static const char *const GRID_TITLE[GT_N] = { "WINDOW", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
+static const char *const GRID_TITLE[GT_N] = { "LOOP", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
     "TRACK %d SHAPE", "MIX PATTERN", "MIX SHAPE", "DRIVE  CRUSH  FILTER", "DELAY", "DELAY COLOUR", "REVERB", "REVERB TONE" };
 static const int GRID[PG_N][48] = {
-    [PG_TRACK] = { GCOL(GT_WINDOW), P_LOOP_START, P_LOOP_END, P_SYNC, P_REVERSE,
-                   GCOL(GT_PITCH), P_PITCH, P_FINE, P_DECAY, P_DECAY_MODE,
-                   GCOL(GT_LEVEL), P_VOLUME, P_PAN, P_MUTE,
+    [PG_TRACK] = { GCOL(GT_WINDOW), GPAIR, P_LOOP_START, P_LOOP_END, GPAIR, P_SYNC, P_REVERSE,
+                   GCOL(GT_PITCH), GPAIR, P_PITCH, P_FINE, GPAIR, P_DECAY, P_DECAY_MODE,
+                   GCOL(GT_LEVEL), GPAIR, P_VOLUME, P_PAN, P_MUTE,
                    GCOL(GT_SENDS), P_FX_SEND, P_VERB_SEND, ROW_END },
-    [PG_SEQ] = { GCOL(GT_TSC_PAT), P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
-                 GCOL(GT_TSC_SHAPE), P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
-                 GCOL(GT_MSC_PAT), P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
-                 GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
-    [PG_FX] = { GCOL(GT_TONE), P_DRIVE, GPAIR, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
-                GCOL(GT_DLY), P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG,
-                GCOL(GT_DLY2), P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
-                GCOL(GT_VERB), P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE,
-                GCOL(GT_VERB2), P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
+    [PG_SEQ] = { GCOL(GT_TSC_PAT), GPAIR, P_SC_MODE, P_SC_DIV, P_SC_TRIG, GPAIR, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
+                 GCOL(GT_TSC_SHAPE), GPAIR, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, GPAIR, P_SC_EVOLVE, P_SC_VAR,
+                 GCOL(GT_MSC_PAT), GPAIR, P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, GPAIR, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
+                 GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, GPAIR, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS,
+                 GPAIR, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
+    [PG_FX] = { GCOL(GT_TONE), P_DRIVE, GPAIR, P_BITS, P_DOWNS, P_FILT_MODE, GPAIR, P_CUTOFF, P_RESO,
+                GCOL(GT_DLY), GPAIR, P_DLY_MIX, P_DLY_FB, P_DLY_SYNC, GPAIR, P_DLY_TIME, P_PINGPONG,
+                GCOL(GT_DLY2), GPAIR, P_DLY_TONE, P_DLY_LOWCUT, GPAIR, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
+                GCOL(GT_VERB), P_VERB_TYPE, GPAIR, P_VERB_LEVEL, P_VERB_TIME, GPAIR, P_VERB_PRE, P_VERB_SIZE,
+                GCOL(GT_VERB2), GPAIR, P_VERB_DAMP, P_VERB_DIFF, GPAIR, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
 };
 static int grid_on;
 static int grid_page(int pg) { return grid_on && GRID[pg][0] <= GCOL(0); }
@@ -1751,7 +1752,9 @@ static void grid_name(int id, char *o, size_t sz)
     if (!strcmp(n, "Reverb")) n = "Type";
     /* shorter where the column's title says the rest */
     static const struct { int id; const char *n; } ab[] = {
-        { P_LOOP_START, "Start" }, { P_LOOP_END, "End" }, { P_FINE, "Fine" }, { P_DECAY, "Decay" }, { P_DECAY_MODE, "Decays" },
+        { P_LOOP_START, "Start" }, { P_LOOP_END, "End" }, { P_FINE, "Fine" }, { P_DECAY, "Decay" }, { P_DECAY_MODE, "Mode" }, { P_REVERSE, "Rev" }, { P_VOLUME, "Vol" },
+        { P_PINGPONG, "Ping" }, { P_DLY_MIX, "Mix" }, { P_SC_AMOUNT, "Amt" }, { P_MSC_AMOUNT, "Amt" },
+        { P_SC_EVOLVE, "Evolve" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
         { P_FX_SEND, "FX" }, { P_VERB_SEND, "Reverb" },
         { P_SC_MODE, "Mode" }, { P_MSC_MODE, "Mode" }, { P_SC_DIV, "Slice" }, { P_MSC_DIV, "Slice" },
         { P_SC_TRIG, "Picks" }, { P_MSC_TRIG, "Picks" }, { P_SC_BARS, "Length" }, { P_MSC_BARS, "Length" },
@@ -1782,8 +1785,8 @@ static int grid_off(int id)
 /* a few choices, short enough to show side by side */
 static const char *const *grid_segs(int id, int *n)
 {
-    static const char *const filt[] = { "Off", "LP", "HP", "BP" }, *const dec[] = { "Dubbing", "Always" },
-                             *const len[] = { "Synced", "Free" }, *const trig[] = { "Random", "Euclid" },
+    static const char *const filt[] = { "Off", "LP", "HP", "BP" }, *const dec[] = { "Dub", "All" },
+                             *const len[] = { "Sync", "Free" }, *const trig[] = { "Random", "Euclid" },
                              *const bars[] = { "1", "2", "4", "8" };
     switch (id) {
     case P_FILT_MODE: *n = 4; return filt;
@@ -1800,15 +1803,33 @@ static void grid_value(int id, char *o, size_t sz)
 {
     static const char *const verb[] = { "Bloom 1 exact", "Bloom 2 exact", "Bloom 1 adj", "Bloom 2 adj" };
     if (id == P_VERB_TYPE) { snprintf(o, sz, "%s", verb[(int)G.eng.p[P_VERB_TYPE] & 3]); return; }
-    if (id == P_DLY_TIME && G.eng.p[P_DLY_SYNC] > 0.5f) { snprintf(o, sz, "synced"); return; }
+    if (id == P_DLY_TIME && G.eng.p[P_DLY_SYNC] > 0.5f) { snprintf(o, sz, "sync"); return; }
+    if (id == P_DLY_WOW_RATE) { snprintf(o, sz, "%.1fHz", *pp(id)); return; }
     if (id == P_SC_DIV || id == P_MSC_DIV) { snprintf(o, sz, "%s", L_SCDIV_SHORT[(int)*pp(id)]); return; }
     if (id == P_DLY_SYNC) { snprintf(o, sz, "%s", (int)*pp(id) ? L_DSYNC[(int)*pp(id)] : "Free"); char *b = strstr(o, " bar"); if (b) *b = 0; return; }
     char v[300]; value_str(id, v, sizeof v);
-    if (v[0] == '(') { snprintf(o, sz, "fixed"); return; }
+    if (v[0] == '(') { snprintf(o, sz, "-"); return; }
     char *c = strstr(v, "  "); if (c) *c = 0;
     c = strstr(v, " ("); if (c) *c = 0;
     if (PD[id].kind == K_DECAY) { c = strstr(v, " per pass"); if (c) *c = 0; }
+    if (PD[id].kind == K_PAN) {
+        float pn = *pp(id);
+        if (fabsf(pn) < 0.005f) snprintf(v, sizeof v, "C"); else snprintf(v, sizeof v, "%c%.0f", pn < 0 ? 'L' : 'R', fabsf(pn) * 100);
+    }
+    if (!strncmp(v, "a bar", 5)) snprintf(v, sizeof v, "bar");
+    c = strstr(v, " Hz"); if (c) memmove(c, c + 1, strlen(c));
+    c = strstr(v, " kHz"); if (c) memmove(c, c + 1, strlen(c));
+    c = strstr(v, " of "); if (c) memmove(c + 1, c + 4, strlen(c + 4) + 1), *c = '/';
     snprintf(o, sz, "%.*s", (int)sz - 1, v);
+}
+
+/* a value right-aligned in the room the name leaves it: smaller when it's tight */
+static void grid_val_text(int xr, int y, Uint32 c, float ts, const char *v, int room)
+{
+    float sc = ts;
+    if ((int)(strlen(v) * FONT_CW * sc) > room) sc = 0.55f;
+    if ((int)(strlen(v) * FONT_CW * sc) > room) return;   /* the footer has it */
+    text_right(xr, y + (int)((ts - sc) * FONT_CH * 0.6f), c, sc, v);
 }
 
 static void grid_cell(int x, int y, int w, int h, int id, int on)
@@ -1820,13 +1841,15 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     char nm[48], v[64]; grid_name(id, nm, sizeof nm);
     Uint32 lc = off ? 0x4a505a : on ? C_TEXT : C_DIM, vc = off ? 0x4a505a : on ? C_ACCENT : C_TEXT;
     Uint32 bar = off ? C_PANEL2 : on ? C_ACCENT : C_WAVE;
-    int lx = x + 12, cw = w - 24, ly = y + 5, by = y + h - 12;
+    int narrow = w < 160, pad = narrow ? 9 : 12;
+    float ts = narrow ? 0.66f : 0.72f;
+    int lx = x + pad, cw = w - 2 * pad, ly = y + 5, by = y + h - 12;
     float val = *pp(id);
     int nseg; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
-    text(lx, ly, lc, 0.72f, nm);
+    text(lx, ly, lc, ts, nm);
     if (d->kind == K_ENUM && d->labels == L_ONOFF) {
         /* a switch */
-        int sw = 46, sh = 22, sx = x + w - 12 - sw, sy = y + (h - sh) / 2, onv = val > 0.5f;
+        int sw = narrow ? 38 : 46, sh = 22, sx = x + w - pad - sw, sy = y + (h - sh) / 2, onv = val > 0.5f;
         fill(sx, sy, sw, sh, onv ? (off ? C_PANEL2 : C_ACCENT) : C_BG, 255);
         fill(onv ? sx + sw - 20 : sx + 2, sy + 2, 18, sh - 4, onv ? C_BG : (off ? C_PANEL2 : C_DIM), 255);
         text(lx, ly + 20, off ? 0x4a505a : onv ? C_TEXT : C_DIM, 0.6f, onv ? "On" : "Off");
@@ -1842,14 +1865,14 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     } else if (d->kind == K_ENUM) {
         /* more choices: the one set, and where it is among them */
         grid_value(id, v, sizeof v);
-        text_right(x + w - 12, ly, vc, 0.72f, v);
+        grid_val_text(x + w - pad, ly, vc, ts, v, cw - (int)(strlen(nm) * FONT_CW * ts) - 6);
         int nn = (int)(d->max - d->min) + 1, gw = cw / nn;
         for (int i = 0; i < nn; i++)
             fill(lx + i * gw, by + 4, gw - 2, 4, (int)(val + 0.5f) == i ? bar : C_BG, 255);
     } else {
         /* a slider: from the middle when it goes either way */
         grid_value(id, v, sizeof v);
-        text_right(x + w - 12, ly, vc, 0.72f, v);
+        grid_val_text(x + w - pad, ly, vc, ts, v, cw - (int)(strlen(nm) * FONT_CW * ts) - 6);
         float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
         fill(lx, by, cw, 6, C_BG, 255);
         if (d->min < 0 && d->max > 0) {
@@ -1967,7 +1990,7 @@ static void draw(void)
         int ncol, maxr; grid_dims(G.page, &ncol, &maxr);
         int below = (G.page == PG_SEQ ? 42 : 0) + 4 + 34 + 8 + 24 + maxr * 50;
         int lh = (724 - below - LANE_Y) / CD_TRACKS - 4;
-        G.lane_h = lh < 40 ? 40 : lh > 90 ? 90 : lh;
+        G.lane_h = lh < 40 ? 40 : lh > 110 ? 110 : lh;
     }
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
     int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 0 : 12);
