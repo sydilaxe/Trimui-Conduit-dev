@@ -200,9 +200,11 @@ static int PAGE_ROWS[PG_N][40] = {
 #define GCOL(t) (-200 - (t))
 #define GPAIR (-150)   /* the next two share a row */
 enum { GT_WINDOW, GT_PITCH, GT_LEVEL, GT_SENDS, GT_TSC_PAT, GT_TSC_SHAPE, GT_MSC_PAT, GT_MSC_SHAPE,
-       GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2, GT_N };
+       GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2,
+       GT_CLOCK, GT_MIDI, GT_INPUT, GT_LIVE, GT_DEVS, GT_N };
 static const char *const GRID_TITLE[GT_N] = { "LOOP", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
-    "TRACK %d SHAPE", "MIX PATTERN", "MIX SHAPE", "DRIVE  CRUSH  FILTER", "DELAY", "DELAY COLOUR", "REVERB", "REVERB TONE" };
+    "TRACK %d SHAPE", "MIX PATTERN", "MIX SHAPE", "DRIVE  CRUSH  FILTER", "DELAY", "DELAY COLOUR", "REVERB", "REVERB TONE",
+    "CLOCK", "MIDI", "INPUT  RECORDING", "LIVE FX  OUTPUT", "DEVICES" };
 static const int GRID[PG_N][48] = {
     [PG_TRACK] = { GCOL(GT_WINDOW), GPAIR, P_LOOP_START, P_LOOP_END, GPAIR, P_SYNC, P_REVERSE,
                    GCOL(GT_PITCH), GPAIR, P_PITCH, P_FINE, GPAIR, P_DECAY, P_DECAY_MODE,
@@ -218,6 +220,11 @@ static const int GRID[PG_N][48] = {
                 GCOL(GT_DLY2), GPAIR, P_DLY_TONE, P_DLY_LOWCUT, GPAIR, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
                 GCOL(GT_VERB), P_VERB_TYPE, GPAIR, P_VERB_LEVEL, P_VERB_TIME, GPAIR, P_VERB_PRE, P_VERB_SIZE,
                 GCOL(GT_VERB2), GPAIR, P_VERB_DAMP, P_VERB_DIFF, GPAIR, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
+    [PG_SYNC] = { GCOL(GT_CLOCK), P_CLOCK, GPAIR, P_BEATS, P_CLOCK_OFS, ROW_TEMPO,
+                  GCOL(GT_MIDI), GPAIR, P_CLOCK_START, P_CLOCK_OUT, P_REC_WAIT, ROW_MIDI_DEV, ROW_END },
+    [PG_IO] = { GCOL(GT_INPUT), GPAIR, P_IN_GAIN, P_MONITOR, GPAIR, P_TRIGGER, P_THRESH, GPAIR, P_AUTOPLAY, P_DUB_ALIGN,
+                GCOL(GT_LIVE), GPAIR, P_IN_FX_SEND, P_IN_VERB_SEND, GPAIR, P_IN_PRINT, P_MASTER, P_SAVE_FMT,
+                GCOL(GT_DEVS), ROW_IN_DEV, ROW_OUT_DEV, ROW_FOLDER, ROW_DIAG, ROW_END },
 };
 static int grid_on;
 static int grid_page(int pg) { return grid_on && GRID[pg][0] <= GCOL(0); }
@@ -1738,6 +1745,38 @@ static void draw_lane(int k)
     }
 }
 
+/* the rows that aren't settings: their names, and what they show */
+static const char *row_label(int id)
+{
+    return id >= 0 ? PD[id].name : id == ROW_IN_DEV ? "Input device" : id == ROW_OUT_DEV ? "Output device"
+         : id == ROW_FOLDER ? "Save folder" : id == ROW_TEMPO ? "Tempo" : id == ROW_MIDI_DEV ? "MIDI in" : "Diagnostics";
+}
+
+static void row_info(int id, char *v, size_t sz, int maxch)
+{
+    Engine *e = &G.eng;
+    char md[200];
+    if (id == ROW_IN_DEV) fit(v, sz, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", maxch);
+    else if (id == ROW_OUT_DEV) fit(v, sz, G.out_name[0] ? G.out_name : "System default", maxch);
+    else if (id == ROW_FOLDER) fit(v, sz, G.rec_dir, maxch);
+    else if (id == ROW_TEMPO) {
+        int nfol, lstate; midi_link_status(&nfol, &lstate);
+        if (e->tr.linked) snprintf(v, sz, "a leading Brick (USB link) %.2f BPM, %s", e->tr.bpm, e->tr.running ? "playing" : "stopped");
+        else if (e->tr.bpm > 0) snprintf(v, sz, "MIDI clock %.1f BPM, %s%s", e->tr.bpm, e->tr.ext_run ? "playing" : "stopped",
+                                         e->tr.following ? "" : "  (not followed)");
+        else if (e->tr.cyc > 0) snprintf(v, sz, "bar %.3f s (first loop)%s", e->tr.cyc / CD_SR,
+                                         nfol ? (nfol == 1 ? ", leading a Brick" : ", leading Bricks") : "");
+        else snprintf(v, sz, "no bar yet: the first synced loop sets it");
+    } else if (id == ROW_MIDI_DEV) {
+        midi_devices(md, sizeof md);
+        fit(v, sz, md[0] ? md : "none (plug in a USB MIDI device)", maxch);
+    }
+    else snprintf(v, sz, "%s | in %.1f kHz | %d in devs | xrun %u/%u | btn %d | %s",
+                  SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
+                  e->in_ratio * CD_SR / 1000.0, SDL_GetNumAudioDevices(1), (unsigned)e->overruns, (unsigned)e->underruns, G.last_raw_btn,
+                  G.midi_last[0] ? G.midi_last : "no MIDI yet");
+}
+
 /* ------------------------------------------- the one-screen layout */
 
 /* a control's name under its column's title: "Delay time" is "Time" under DELAY */
@@ -1754,7 +1793,10 @@ static void grid_name(int id, char *o, size_t sz)
     static const struct { int id; const char *n; } ab[] = {
         { P_LOOP_START, "Start" }, { P_LOOP_END, "End" }, { P_FINE, "Fine" }, { P_DECAY, "Decay" }, { P_DECAY_MODE, "Mode" }, { P_REVERSE, "Rev" }, { P_VOLUME, "Vol" },
         { P_PINGPONG, "Ping" }, { P_DLY_MIX, "Mix" }, { P_SC_AMOUNT, "Amt" }, { P_MSC_AMOUNT, "Amt" },
-        { P_SC_EVOLVE, "Evolve" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
+        { P_SC_EVOLVE, "Evolve" }, { P_IN_GAIN, "Gain" }, { P_MONITOR, "Monitor" }, { P_TRIGGER, "Trigger" }, { P_THRESH, "Thresh" },
+        { P_AUTOPLAY, "Auto loop" }, { P_IN_FX_SEND, "FX" }, { P_IN_VERB_SEND, "Reverb" }, { P_IN_PRINT, "Record" },
+        { P_MASTER, "Master" }, { P_SAVE_FMT, "Save as" }, { P_BEATS, "Beats" }, { P_CLOCK_OFS, "Offset" },
+        { P_CLOCK_START, "Start/Stop" }, { P_CLOCK_OUT, "Clock out" }, { P_REC_WAIT, "Rec waits for bar" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
         { P_FX_SEND, "FX" }, { P_VERB_SEND, "Reverb" },
         { P_SC_MODE, "Mode" }, { P_MSC_MODE, "Mode" }, { P_SC_DIV, "Slice" }, { P_MSC_DIV, "Slice" },
         { P_SC_TRIG, "Picks" }, { P_MSC_TRIG, "Picks" }, { P_SC_BARS, "Length" }, { P_MSC_BARS, "Length" },
@@ -1790,6 +1832,11 @@ static const char *const *grid_segs(int id, int *n)
                              *const bars[] = { "1", "2", "4", "8" };
     switch (id) {
     case P_FILT_MODE: *n = 4; return filt;
+    case P_CLOCK: { static const char *const c[] = { "Internal", "MIDI", "Auto" }; *n = 3; return c; }
+    case P_CLOCK_START: { static const char *const c[] = { "Follow", "Ignore" }; *n = 2; return c; }
+    case P_TRIGGER: { static const char *const c[] = { "Instant", "Level" }; *n = 2; return c; }
+    case P_IN_PRINT: { static const char *const c[] = { "Dry", "Wet" }; *n = 2; return c; }
+    case P_SAVE_FMT: { static const char *const c[] = { "16-bit", "32 float" }; *n = 2; return c; }
     case P_DECAY_MODE: *n = 2; return dec;
     case P_SYNC: *n = 2; return len;
     case P_SC_TRIG: case P_MSC_TRIG: *n = 2; return trig;
@@ -1834,6 +1881,19 @@ static void grid_val_text(int xr, int y, Uint32 c, float ts, const char *v, int 
 
 static void grid_cell(int x, int y, int w, int h, int id, int on)
 {
+    if (id < 0) {
+        /* a device, folder or what's going on: words, not a control */
+        int sel = id == ROW_IN_DEV || id == ROW_OUT_DEV;
+        fill(x, y, w, h, on ? C_PANEL2 : C_PANEL, 255);
+        if (on) fill(x, y, 4, h, C_ACCENT, 255);
+        char v[300]; int maxch = (int)((w - 24) / (FONT_CW * 0.62f));
+        row_info(id, v, sizeof v, maxch);
+        if ((int)strlen(v) > maxch) { char t[300]; fit(t, sizeof t, v, maxch); snprintf(v, sizeof v, "%s", t); }
+        text(x + 12, y + 5, on ? C_TEXT : C_DIM, 0.72f, row_label(id));
+        if (sel) text_right(x + w - 12, y + 5, C_DIM, 0.6f, "< >");
+        text(x + 12, y + h - 19, on && sel ? C_ACCENT : sel ? C_TEXT : C_DIM, 0.62f, v);
+        return;
+    }
     const ParamDesc *d = &PD[id];
     int off = grid_off(id);
     fill(x, y, w, h, on ? C_PANEL2 : C_PANEL, 255);
@@ -2049,9 +2109,7 @@ static void draw(void)
             text(32, y + 8, C_ACCENT, 0.8f, h);
             continue;
         }
-        const char *label = id >= 0 ? PD[id].name : id == ROW_IN_DEV ? "Input device"
-                          : id == ROW_OUT_DEV ? "Output device" : id == ROW_FOLDER ? "Save folder"
-                          : id == ROW_TEMPO ? "Tempo" : id == ROW_MIDI_DEV ? "MIDI in" : "Diagnostics";
+        const char *label = row_label(id);
         text(32, y + 4, on ? C_TEXT : C_DIM, 1.f, label);
         if (id >= 0) {
             value_str(id, v, sizeof v);
@@ -2063,26 +2121,7 @@ static void draw(void)
                 fill(700, y + 12, (int)(292 * t), 8, on ? C_ACCENT : C_DIM, 255);
             }
         } else {
-            char md[200];
-            if (id == ROW_IN_DEV) fit(v, sizeof v, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", 56);
-            else if (id == ROW_OUT_DEV) fit(v, sizeof v, G.out_name[0] ? G.out_name : "System default", 56);
-            else if (id == ROW_FOLDER) fit(v, sizeof v, G.rec_dir, 56);
-            else if (id == ROW_TEMPO) {
-                int nfol, lstate; midi_link_status(&nfol, &lstate);
-                if (e->tr.linked) snprintf(v, sizeof v, "a leading Brick (USB link) %.2f BPM, %s", e->tr.bpm, e->tr.running ? "playing" : "stopped");
-                else if (e->tr.bpm > 0) snprintf(v, sizeof v, "MIDI clock %.1f BPM, %s%s", e->tr.bpm, e->tr.ext_run ? "playing" : "stopped",
-                                            e->tr.following ? "" : "  (not followed)");
-                else if (e->tr.cyc > 0) snprintf(v, sizeof v, "bar %.3f s (first loop)%s", e->tr.cyc / CD_SR,
-                                                 nfol ? (nfol == 1 ? ", leading a Brick" : ", leading Bricks") : "");
-                else snprintf(v, sizeof v, "no bar yet: the first synced loop sets it");
-            } else if (id == ROW_MIDI_DEV) {
-                midi_devices(md, sizeof md);
-                fit(v, sizeof v, md[0] ? md : "none (plug in a USB MIDI device)", 56);
-            }
-            else snprintf(v, sizeof v, "%s | in %.1f kHz | %d in devs | xrun %u/%u | btn %d | %s",
-                          SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
-                          e->in_ratio * CD_SR / 1000.0, SDL_GetNumAudioDevices(1), (unsigned)e->overruns, (unsigned)e->underruns, G.last_raw_btn,
-                          G.midi_last[0] ? G.midi_last : "no MIDI yet");
+            row_info(id, v, sizeof v, 56);
             text(300, y + 4, id == ROW_DIAG ? (on ? C_ACCENT : C_TEXT) : C_DIM, id == ROW_DIAG ? 0.8f : 1.f, v);
         }
     }
@@ -2100,8 +2139,9 @@ static void draw(void)
     if (grid && !G.held[A_SEL]) {
         /* the selected control in full, and how to work the page */
         int id = PAGE_ROWS[G.page][G.sel_row[G.page]];
-        char v[300]; value_str(id, v, sizeof v);
-        int nw = text(16, 736, C_TEXT, 0.9f, PD[id].name);
+        char v[300];
+        if (id >= 0) value_str(id, v, sizeof v); else row_info(id, v, sizeof v, 80);
+        int nw = text(16, 736, C_TEXT, 0.9f, row_label(id));
         char vf[100]; fit(vf, sizeof vf, v, 50);
         text(16 + nw + 16, 736, C_ACCENT, 0.9f, vf);
         text_right(1008, 739, C_DIM, 0.75f, "UP/DN move  L/R set  hold SELECT");
@@ -2197,6 +2237,10 @@ static int selftest(const char *shot_dir)
     SHOT("shot_fx");
     G.page = PG_TRACK; G.sel = 1; G.sel_row[PG_TRACK] = 5; WAITMS(100);
     SHOT("shot_track");
+    G.page = PG_SYNC; G.sel_row[PG_SYNC] = 0; WAITMS(100);
+    SHOT("shot_sync");
+    G.page = PG_IO; G.sel_row[PG_IO] = 0; WAITMS(100);
+    SHOT("shot_io");
     G.sel = 0; G.page = PG_FX;
 
     /* X/Y mix: SELECT + right, the point in track 1's corner, then off again */
