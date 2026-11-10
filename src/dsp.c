@@ -40,6 +40,7 @@ void eng_default_params(float *p)
     eng_default_verb(p);
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
+    p[P_IN_FX_SEND] = 0.f;  p[P_IN_VERB_SEND] = 0.f; p[P_IN_PRINT] = IN_PRINT_DRY;
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
     p[P_CLOCK_START] = START_FOLLOW; p[P_CLOCK_OUT] = 1.f;
 }
@@ -187,9 +188,10 @@ int eng_init(Engine *e, int max_seconds)
         t->xy = 1.f;
         t->last_od = -1;
     }
-    if (fx_init(&e->fx) || verb_init(&e->verb)) { eng_free(e); return -1; }
+    if (fx_init(&e->fx) || verb_init(&e->verb) || fx_init(&e->fx_in) || verb_init(&e->verb_in)) { eng_free(e); return -1; }
     eng_default_params(e->p);
     fx_reset(&e->fx, e->p);
+    fx_reset(&e->fx_in, e->p);
     e->in_block = 512;
     e->lat_frames = 3 * 512;
     e->priming = 1;
@@ -210,6 +212,8 @@ void eng_free(Engine *e)
     }
     fx_free(&e->fx);
     verb_free(&e->verb);
+    fx_free(&e->fx_in);
+    verb_free(&e->verb_in);
 }
 
 double eng_rate(const float *tp, float bend)
@@ -776,11 +780,24 @@ void eng_render(Engine *e, float *out, int frames)
     double ratio = e->in_ratio * (1.0 + clampf((e->fill_avg - target) * 0.00002f, -0.003f, 0.003f));
 
     float mix[BLK * 2], snd[BLK * 2], vb[BLK * 2], inb[BLK * 2];
+    float recb[BLK * 2], ifx[BLK * 2], ivb[BLK * 2], inlev[BLK];
     TC tc[CD_TRACKS];
+    /* the live input's sends: in Dry mode into the loops' FX and reverb
+     * (heard only), when printed through the input's own (recorded too) */
+    int print = p[P_IN_PRINT] > 0.5f;
+    float in_fs_t = clampf(p[P_IN_FX_SEND], 0.f, 1.f), in_vs_t = clampf(p[P_IN_VERB_SEND], 0.f, 1.f);
+    if (print != e->in_print) {
+        /* nothing left over from the last time the input's own chain ran */
+        if (print) { fx_reset(&e->fx_in, p); verb_reset(&e->verb_in); }
+        e->in_print = print;
+    }
     int done = 0;
     while (done < frames) {
         int n = frames - done > BLK ? BLK : frames - done;
         for (int k = 0; k < CD_TRACKS; k++) prep(e, &e->trk[k], &tc[k]);
+        /* the input for this block, then its effects: what's recorded (recb)
+         * and the live input's effects, heard (ifx, ivb) */
+        float ifs[BLK];
         for (int i = 0; i < n; i++) {
             float il = 0, ir = 0;
             if (!e->priming) {
@@ -800,9 +817,27 @@ void eng_render(Engine *e, float *out, int frames)
             }
             float m = fabsf(il) > fabsf(ir) ? fabsf(il) : fabsf(ir);
             if (m > inmax) inmax = m;
+            inlev[i] = m;
             inb[2 * i] = il; inb[2 * i + 1] = ir;
+            e->in_gs += (in_fs_t - e->in_gs) * 0.004f;
+            e->in_gv += (in_vs_t - e->in_gv) * 0.004f;
+            ifs[i] = e->in_gs;
+            ifx[2 * i] = il * e->in_gs; ifx[2 * i + 1] = ir * e->in_gs;
+            ivb[2 * i] = il * e->in_gv; ivb[2 * i + 1] = ir * e->in_gv;
+        }
+        if (print) {
+            /* always run while printing, so the delay's and reverb's tails ring
+             * out when a send is turned down */
+            fx_block(&e->fx_in, p, tr->cyc, ifx, n);
+            verb_process(&e->verb_in, p, ivb, n);
+            /* the FX send splits the input as it does a track's */
+            for (int i = 0; i < 2 * n; i++) recb[i] = inb[i] * (1 - ifs[i / 2]) + ifx[i] + ivb[i];
+        } else memcpy(recb, inb, sizeof(float) * 2 * (size_t)n);
+        for (int i = 0; i < n; i++) {
+            float il = recb[2 * i], ir = recb[2 * i + 1], m = inlev[i];
 
             float ml = 0, mr = 0, sl = 0, sr = 0, vl = 0, vr = 0;
+            if (!print) { sl = ifx[2 * i]; sr = ifx[2 * i + 1]; vl = ivb[2 * i]; vr = ivb[2 * i + 1]; }
             for (int k = 0; k < CD_TRACKS; k++) {
                 Track *t = &e->trk[k];
                 TC *c = &tc[k];
@@ -932,15 +967,18 @@ void eng_render(Engine *e, float *out, int frames)
         fx_block(&e->fx, p, tr->cyc, snd, n);
         verb_process(&e->verb, p, vb, n);
         for (int i = 0; i < 2 * n; i++) mix[i] += snd[i] + vb[i];
+        if (print) for (int i = 0; i < 2 * n; i++) mix[i] += ifx[i] + ivb[i];
         /* the input is heard through Conduit only as far as Input monitor
          * says, overdubbing or not: an interface that monitors its own input
-         * would otherwise be heard twice, the second copy late */
+         * would otherwise be heard twice, the second copy late. Its
+         * effects are heard whatever the monitor (what's sent to the FX
+         * is taken off the dry, as on a track) */
         float mon_t = p[P_MONITOR];
         float master = p[P_MASTER];
         for (int i = 0; i < n; i++) {
             e->mon_g += (mon_t - e->mon_g) * fade;
             for (int c = 0; c < 2; c++) {
-                float o = mix[2 * i + c] * master + inb[2 * i + c] * e->mon_g;
+                float o = mix[2 * i + c] * master + inb[2 * i + c] * (1 - ifs[i]) * e->mon_g;
                 o = sat(o);   /* loops + monitored input round off instead of clipping */
                 float a = fabsf(o); if (a > outmax) outmax = a;
                 out[2 * (done + i) + c] = o;

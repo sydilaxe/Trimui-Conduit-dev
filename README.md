@@ -18,6 +18,9 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Input:** any capture device SDL sees. USB devices are picked
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
+- **Live input through the effects:** send what you're playing to the Bloom
+  reverb and the FX as you play, to hear them live, and choose whether takes
+  record it dry or with the effects printed in.
 - **Four tracks:** each up to 120 s, with its own length, volume, pan, mute,
   FX send, reverb send, pitch, window, overdub, decay and 16 levels of undo.
 - **Sync:** the first loop sets the bar, or follow **MIDI clock** from a USB
@@ -194,6 +197,29 @@ The **EFFECTS** tab holds everything after the tracks, in three sections
 - **Reverb** is fed by each track's **Reverb send**, a send of its own (see
   below).
 
+### The live input through the effects
+
+The input can go through the effects as you play, not only the loops. On
+the **IO** tab:
+
+- **Live reverb send:** how much of the input goes to the Bloom reverb.
+- **Live FX send:** how much goes through the drive, crush, filter and delay.
+  As with a track's FX send, that much is taken off the dry input (at 100%
+  you hear it only through the FX).
+- **Record live input:**
+  - *Dry (FX heard only)*, the default: you hear the input's reverb and FX,
+    but takes and overdubs record it dry. Turn up the track's own sends to
+    hear the effects on the loop.
+  - *With the live FX*: the input goes through its own copy of the FX and
+    the reverb (the same settings), and that is recorded: the reverb's swell
+    and tail are part of the loop. Leave the track's reverb send at 0% then,
+    or the loop gets the reverb twice.
+
+The input's effects are heard whatever **Input monitor** is set to: that sets
+only the dry input, so with an interface that monitors itself you can leave
+it at 0% and hear the dry signal from the interface and the reverb from
+Conduit. The saved mix and Resample hold only the loops, not the live input.
+
 ### Reverb
 
 **TRACK → Reverb send** sends the track to the Bloom reverb, on its own:
@@ -260,6 +286,8 @@ in from the interface, so layers stay in time pass after pass. You hear the
 new layer through Conduit once the loop comes back round. To hear your input
 as you play, use your interface's own (direct) monitoring, or turn up
 **IO → Input monitor** if it has none; with both you'd hear yourself twice.
+To hear the reverb or the FX on what you play, see
+[The live input through the effects](#the-live-input-through-the-effects).
 
 **TRACK → Loop decay** makes the loop a little quieter on every pass, like
 tape wearing out: older layers slowly fade, and stacking overdubs can't

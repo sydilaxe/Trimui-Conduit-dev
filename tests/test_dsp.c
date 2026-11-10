@@ -875,6 +875,87 @@ static void test_fx_send(void)
     eng_free(e); free(e);
 }
 
+/* The live input through the reverb: heard with the monitor off, the take
+ * dry by default; with Record live input: With the live FX, the reverb is
+ * in the take (and heard once, not twice) */
+static void live_burst(Engine *e, float *tail_out, float *dry_out)
+{
+    float in[512 * 2], out[512 * 2];
+    double ph = 0;
+    *tail_out = 0; *dry_out = 0;
+    for (int b = 0; b < 60; b++) {          /* 0.25 s of 440 Hz, then 0.4 s of silence */
+        for (int i = 0; i < 512; i++) {
+            float s = b < 24 ? 0.4f * (float)sin(ph) : 0.f; ph += 2 * M_PI * 440 / CD_SR;
+            in[2 * i] = s; in[2 * i + 1] = s;
+        }
+        eng_push_input(e, in, 512);
+        eng_render(e, out, 512);
+        float pk = 0; for (int i = 0; i < 1024; i++) pk = fmaxf(pk, fabsf(out[i]));
+        if (b >= 12 && b < 20 && pk > *dry_out) *dry_out = pk;
+        if (b >= 36 && pk > *tail_out) *tail_out = pk;
+    }
+}
+
+static void test_live_fx(void)
+{
+    char msg[200];
+    for (int mode = 0; mode < 2; mode++) {
+        Engine *e = calloc(1, sizeof *e);
+        eng_init(e, 4);
+        e->p[P_MONITOR] = 0;
+        e->p[P_IN_VERB_SEND] = 1.f;
+        e->p[P_IN_PRINT] = mode;
+        float pk, tail, during;
+        run_silence(e, 8192, &pk);          /* the FIFO primed */
+        eng_rec_button(e, 0);
+        live_burst(e, &tail, &during);
+        eng_rec_button(e, 0);
+        run_silence(e, 512, &pk);
+        Track *t = &e->trk[0];
+        /* the take after the burst: 0.35 s .. 0.6 s */
+        int a = (int)(0.35 * CD_SR), b = (int)(0.6 * CD_SR);
+        double take_tail = t->len > b ? rms(t->buf + 2 * a, b - a) : -1;
+        double take_burst = t->len > b ? rms(t->buf + 2 * (int)(0.05 * CD_SR), (int)(0.15 * CD_SR)) : -1;
+        if (mode == 0) {
+            snprintf(msg, sizeof msg, "live reverb heard with the monitor off (tail %.3f), the take dry (burst %.3f, after %.4f)",
+                     tail, take_burst, take_tail);
+            T(tail > 0.01f && take_burst > 0.2 && take_tail >= 0 && take_tail < 1e-4, msg);
+        } else {
+            snprintf(msg, sizeof msg, "live reverb printed: the take has the tail (%.4f) and the burst (%.3f); heard tail %.3f",
+                     take_tail, take_burst, tail);
+            T(tail > 0.01f && take_tail > 0.005 && take_burst > 0.2, msg);
+        }
+        eng_free(e); free(e);
+    }
+    /* the live FX send takes the input off the dry and through the master FX */
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    e->p[P_MONITOR] = 1.f; e->p[P_IN_FX_SEND] = 1.f;
+    e->p[P_FILT_MODE] = 1; e->p[P_CUTOFF] = 0.1f; e->p[P_RESO] = 0;   /* low-pass ~40 Hz */
+    float pk;
+    run_silence(e, 8192, &pk);
+    feed_sine(e, 3000, 0.5f, 16384);
+    float out[512 * 2], in[512 * 2]; double ph = 0; float top = 0;
+    for (int b = 0; b < 16; b++) {
+        for (int i = 0; i < 512; i++) { float s = 0.5f * (float)sin(ph); ph += 2 * M_PI * 3000 / CD_SR; in[2 * i] = s; in[2 * i + 1] = s; }
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        for (int i = 0; i < 1024; i++) top = fmaxf(top, fabsf(out[i]));
+    }
+    snprintf(msg, sizeof msg, "live FX send 100%%: the input only through the low-pass (%.3f)", top);
+    T(top < 0.05f, msg);
+    e->p[P_IN_FX_SEND] = 0.f;
+    feed_sine(e, 3000, 0.5f, 16384);
+    top = 0;
+    for (int b = 0; b < 16; b++) {
+        for (int i = 0; i < 512; i++) { float s = 0.5f * (float)sin(ph); ph += 2 * M_PI * 3000 / CD_SR; in[2 * i] = s; in[2 * i + 1] = s; }
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        for (int i = 0; i < 1024; i++) top = fmaxf(top, fabsf(out[i]));
+    }
+    snprintf(msg, sizeof msg, "live FX send off: the input heard dry at the monitor (%.3f)", top);
+    T(top > 0.4f, msg);
+    eng_free(e); free(e);
+}
+
 /* The X/Y mix's gain sits on top of the volume, in what's heard and in the
  * saved mix, and fades rather than steps */
 static void test_xy_gain(void)
@@ -1220,6 +1301,7 @@ int main(void)
 {
     test_rate_mismatch();
     test_xy_gain();
+    test_live_fx();
     test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");

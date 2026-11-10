@@ -29,6 +29,8 @@ typedef enum {
     P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
+    /* the live input through the effects */
+    P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
     P_COUNT
@@ -41,6 +43,9 @@ enum { SYNC_ON = 0, SYNC_FREE = 1 };       /* P_SYNC */
  * else the first loop */
 enum { CLOCK_INTERNAL = 0, CLOCK_MIDI = 1, CLOCK_AUTO = 2 };
 enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start / Stop / Continue */
+/* P_IN_PRINT: takes are the input as it comes (its effects only heard), or
+ * the input through its effects (printed into the loop) */
+enum { IN_PRINT_DRY = 0, IN_PRINT_WET = 1 };
 
 /* Undo: up to CD_UNDO_LEVELS steps per track, newest last. An overdub keeps a
  * copy of the take as it was before; an erase keeps only the take's length
@@ -179,6 +184,12 @@ typedef struct {
     volatile float in_peak, out_peak;
     FxState fx;
     Verb verb;
+    /* the live input's sends: smoothed FX and reverb send, and its own FX
+     * and reverb (the same settings) for when they're printed into takes */
+    float in_gs, in_gv;
+    int in_print;              /* the print mode the input chain last ran in */
+    FxState fx_in;
+    Verb verb_in;
 } Engine;
 
 int  eng_init(Engine *e, int max_seconds);   /* per track */

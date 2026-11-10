@@ -56,6 +56,7 @@ static const char *const L_VERB[] = { "Bloom 1  exact MidiVerb II #45", "Bloom 2
                                       "Bloom 1  adjustable", "Bloom 2  adjustable (+85 ms)" };
 static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)", "Auto (follow a clock when one comes)" };
 static const char *const L_START[] = { "Follow", "Ignore (the clock only)" };
+static const char *const L_PRINT[] = { "Dry (FX heard only)", "With the live FX" };
 
 static const ParamDesc PD[P_COUNT] = {
     [P_LOOP_START] = { "Window start", 0, 1, 0.002f, 0.02f, K_LOOPPOS, 0 },
@@ -105,6 +106,9 @@ static const ParamDesc PD[P_COUNT] = {
     [P_AUTOPLAY]   = { "Loop after rec", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_SAVE_FMT]   = { "Save format", 0, 1, 1, 1, K_ENUM, L_FMT },
     [P_DUB_ALIGN]  = { "Dub align", -60, 120, 1, 10, K_MS, 0 },
+    [P_IN_FX_SEND] = { "Live FX send", 0, 1, 0.05f, 0.25f, K_SEND, 0 },
+    [P_IN_VERB_SEND] = { "Live reverb send", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_IN_PRINT]   = { "Record live input", 0, 1, 1, 1, K_ENUM, L_PRINT },
     [P_CLOCK]      = { "Sync to", 0, 2, 1, 1, K_ENUM, L_CLOCK },
     [P_REC_WAIT]   = { "Rec waits for bar", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_BEATS]      = { "Beats per bar", 1, 16, 1, 4, K_INT, 0 },
@@ -126,7 +130,8 @@ static const char *const PKEY[P_COUNT] = {
     [P_VERB_DIFF] = "reverb_diffusion", [P_VERB_WIDTH] = "reverb_width", [P_VERB_LOWCUT] = "reverb_lowcut",
     [P_VERB_HICUT] = "reverb_highcut",
     [P_IN_GAIN] = "in_gain", [P_TRIGGER] = "trigger", [P_THRESH] = "threshold", [P_AUTOPLAY] = "autoplay",
-    [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms", [P_CLOCK] = "sync_to",
+    [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms",
+    [P_IN_FX_SEND] = "live_fx_send", [P_IN_VERB_SEND] = "live_reverb_send", [P_IN_PRINT] = "record_live_fx", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
     [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_out",
 };
@@ -143,7 +148,7 @@ static const int PAGE_ROWS[PG_N][40] = {
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
       ROW_END },
     { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
-    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
+    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
     { ROW_END },
 };
@@ -360,7 +365,8 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
                                P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
                                P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
-                               P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT };
+                               P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
+                               P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT };
 static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
