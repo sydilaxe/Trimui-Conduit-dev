@@ -35,8 +35,8 @@
 #define LANE_X 100
 #define LANE_Y 56
 #define LANE_W 908
-#define LANE_H 66
-#define LANE_STEP 72
+#define LANE_H (G.lane_h)
+#define LANE_STEP (G.lane_h + 4)
 
 /* ------------------------------------------------------------ params */
 
@@ -180,7 +180,7 @@ enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TE
        ROW_END = -100 };
 enum { PG_TRACK, PG_SEQ, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "SEQ", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
-static const int PAGE_ROWS[PG_N][40] = {
+static int PAGE_ROWS[PG_N][40] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
     { ROW_H_TSC, P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
       ROW_H_MSC, P_MSC_MODE, P_MSC_FB, P_MSC_FREEZE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_AMOUNT,
@@ -194,6 +194,40 @@ static const int PAGE_ROWS[PG_N][40] = {
     { ROW_END },
     { ROW_END },
 };
+/* the one-screen layout (a test, CONDUIT_GRID=1): a page's controls in
+ * columns, each under a title. UP/DOWN walk them column by column, so the
+ * page's rows are put in this order */
+#define GCOL(t) (-200 - (t))
+enum { GT_WINDOW, GT_PITCH, GT_LEVEL, GT_SENDS, GT_TSC_PAT, GT_TSC_SHAPE, GT_MSC_PAT, GT_MSC_SHAPE,
+       GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2, GT_N };
+static const char *const GRID_TITLE[GT_N] = { "WINDOW", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
+    "TRACK %d SHAPE", "MIX PATTERN", "MIX SHAPE", "DRIVE  CRUSH  FILTER", "DELAY", "DELAY COLOUR", "REVERB", "REVERB TONE" };
+static const int GRID[PG_N][48] = {
+    [PG_TRACK] = { GCOL(GT_WINDOW), P_LOOP_START, P_LOOP_END, P_SYNC, P_REVERSE,
+                   GCOL(GT_PITCH), P_PITCH, P_FINE, P_DECAY, P_DECAY_MODE,
+                   GCOL(GT_LEVEL), P_VOLUME, P_PAN, P_MUTE,
+                   GCOL(GT_SENDS), P_FX_SEND, P_VERB_SEND, ROW_END },
+    [PG_SEQ] = { GCOL(GT_TSC_PAT), P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
+                 GCOL(GT_TSC_SHAPE), P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
+                 GCOL(GT_MSC_PAT), P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
+                 GCOL(GT_MSC_SHAPE), P_MSC_FB, P_MSC_FREEZE, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
+    [PG_FX] = { GCOL(GT_TONE), P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
+                GCOL(GT_DLY), P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG,
+                GCOL(GT_DLY2), P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
+                GCOL(GT_VERB), P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE,
+                GCOL(GT_VERB2), P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
+};
+static int grid_on;
+static int grid_page(int pg) { return grid_on && GRID[pg][0] <= GCOL(0); }
+static void grid_apply(void)
+{
+    for (int pg = 0; pg < PG_N; pg++) {
+        if (!grid_page(pg)) continue;
+        int n = 0;
+        for (int i = 0; GRID[pg][i] != ROW_END; i++) if (GRID[pg][i] > GCOL(0)) PAGE_ROWS[pg][n++] = GRID[pg][i];
+        PAGE_ROWS[pg][n] = ROW_END;
+    }
+}
 static int page_count(int pg) { int n = 0; while (PAGE_ROWS[pg][n] != ROW_END) n++; return n; }
 
 /* ------------------------------------------------------------- input */
@@ -231,6 +265,7 @@ typedef struct {
     int trig_used[A_N];                     /* L2/R2 used as a fine / coarse modifier while held */
 
     int page, sel_row[PG_N], scroll[PG_N];
+    int lane_h;                             /* the track lanes' height: smaller on a one-screen page */
     char files[MAX_FILES][256]; long fsize[MAX_FILES]; int nfiles;
     int del_confirm; Uint32 confirm_until; int clear_confirm;
 
@@ -1563,12 +1598,12 @@ static void draw_seq_lane(int k, int y)
 }
 
 /* the SEQ tab: the master scatter's steps in the bar, where the meters are */
-static void draw_master_seq(void)
+static void draw_master_seq(int y)
 {
     Engine *e = &G.eng;
     float tp[P_TRACK_N]; msc_params(e->p, tp);
     int beats = (int)e->p[P_BEATS]; if (beats < 1) beats = 1;
-    int mode = (int)tp[P_SC_MODE], nb = sc_bar_steps(tp, beats), y = 342, h = 38;
+    int mode = (int)tp[P_SC_MODE], nb = sc_bar_steps(tp, beats), h = 38;
     int live = e->msc.pos_ago >= 0 && e->tr.running;
     fill(16, y, 76, h, C_PANEL, 255);
     text(24, y + 2, mode ? C_ACCENT : C_TEXT, 0.75f, "MIX");
@@ -1610,8 +1645,13 @@ static void draw_lane(int k)
     /* number box */
     fill(16, y, 76, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
     if (on) fill(16, y, 5, LANE_H, C_ACCENT, 255);
-    textf(32, y + 2, on ? C_ACCENT : C_TEXT, 1.4f, "%d", k + 1);
-    text(30, y + 42, sc, 0.7f, st);
+    if (LANE_H >= 60) {
+        textf(32, y + 2, on ? C_ACCENT : C_TEXT, 1.4f, "%d", k + 1);
+        text(30, y + 42, sc, 0.7f, st);
+    } else {
+        textf(30, y + 2, on ? C_ACCENT : C_TEXT, 1.f, "%d", k + 1);
+        text(28, y + LANE_H - 17, sc, 0.6f, st);
+    }
     if (t->p[P_MUTE] > 0.5f) text(64, y + 6, C_REC, 0.8f, "M");
     if (G.xy_on) {
         /* the X/Y mix's gain for this track */
@@ -1696,6 +1736,141 @@ static void draw_lane(int k)
     }
 }
 
+/* ------------------------------------------- the one-screen layout */
+
+/* a control's name under its column's title: "Delay time" is "Time" under DELAY */
+static void grid_name(int id, char *o, size_t sz)
+{
+    const char *n = PD[id].name;
+    static const char *const pre[] = { "Master ", "Delay ", "Reverb " };
+    for (int i = G.page == PG_FX ? 1 : 0; i < (G.page == PG_FX ? 3 : 1); i++) {
+        size_t l = strlen(pre[i]);
+        if (!strncmp(n, pre[i], l) && n[l]) { n += l; break; }
+    }
+    if (!strcmp(n, "Reverb")) n = "Type";
+    snprintf(o, sz, "%s", n);
+    if (o[0] >= 'a' && o[0] <= 'z') o[0] -= 32;
+}
+
+/* settings that do nothing as things are set: greyed out */
+static int grid_off(int id)
+{
+    float tp[P_TRACK_N]; int sid = sc_view(id, tp);
+    if ((id == P_VERB_SIZE || id == P_VERB_DAMP || id == P_VERB_DIFF || id == P_VERB_TIME) && G.eng.p[P_VERB_TYPE] < 1.5f) return 1;
+    if (id == P_DLY_TIME && G.eng.p[P_DLY_SYNC] > 0.5f) return 1;
+    if (id == P_CUTOFF || id == P_RESO) return G.eng.p[P_FILT_MODE] < 0.5f;
+    if (sid == P_SC_AMOUNT) return tp[P_SC_TRIG] >= 0.5f;
+    if (sid == P_SC_HITS || sid == P_SC_STEPS || sid == P_SC_ROT) return tp[P_SC_TRIG] < 0.5f;
+    if (sid >= 0 && sid != P_SC_MODE) return tp[P_SC_MODE] < 0.5f;
+    if (id == P_MSC_FB || id == P_MSC_FREEZE) return G.eng.p[P_MSC_MODE] < 0.5f;
+    return 0;
+}
+
+/* a few choices, short enough to show side by side */
+static const char *const *grid_segs(int id, int *n)
+{
+    static const char *const filt[] = { "Off", "LP", "HP", "BP" }, *const dec[] = { "Dubbing", "Always" },
+                             *const len[] = { "Synced", "Free" }, *const trig[] = { "Random", "Euclid" },
+                             *const bars[] = { "1", "2", "4", "8" };
+    switch (id) {
+    case P_FILT_MODE: *n = 4; return filt;
+    case P_DECAY_MODE: *n = 2; return dec;
+    case P_SYNC: *n = 2; return len;
+    case P_SC_TRIG: case P_MSC_TRIG: *n = 2; return trig;
+    case P_SC_BARS: case P_MSC_BARS: *n = 4; return bars;
+    }
+    return NULL;
+}
+
+/* the value, short: what's in brackets is left for the footer */
+static void grid_value(int id, char *o, size_t sz)
+{
+    static const char *const verb[] = { "Bloom 1 exact", "Bloom 2 exact", "Bloom 1 adj", "Bloom 2 adj" };
+    if (id == P_VERB_TYPE) { snprintf(o, sz, "%s", verb[(int)G.eng.p[P_VERB_TYPE] & 3]); return; }
+    if (id == P_DLY_TIME && G.eng.p[P_DLY_SYNC] > 0.5f) { snprintf(o, sz, "synced"); return; }
+    char v[300]; value_str(id, v, sizeof v);
+    if (v[0] == '(') { snprintf(o, sz, "fixed"); return; }
+    char *c = strstr(v, "  "); if (c) *c = 0;
+    c = strstr(v, " ("); if (c) *c = 0;
+    if (PD[id].kind == K_DECAY) { c = strstr(v, " per pass"); if (c) *c = 0; }
+    snprintf(o, sz, "%.*s", (int)sz - 1, v);
+}
+
+static void grid_cell(int x, int y, int w, int h, int id, int on)
+{
+    const ParamDesc *d = &PD[id];
+    int off = grid_off(id);
+    fill(x, y, w, h, on ? C_PANEL2 : C_PANEL, 255);
+    if (on) fill(x, y, 4, h, C_ACCENT, 255);
+    char nm[48], v[64]; grid_name(id, nm, sizeof nm);
+    Uint32 lc = off ? 0x4a505a : on ? C_TEXT : C_DIM, vc = off ? 0x4a505a : on ? C_ACCENT : C_TEXT;
+    Uint32 bar = off ? C_PANEL2 : on ? C_ACCENT : C_WAVE;
+    int lx = x + 12, cw = w - 24, ly = y + 5, by = y + h - 12;
+    float val = *pp(id);
+    int nseg; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
+    text(lx, ly, lc, 0.72f, nm);
+    if (d->kind == K_ENUM && d->labels == L_ONOFF) {
+        /* a switch */
+        int sw = 46, sh = 22, sx = x + w - 12 - sw, sy = y + (h - sh) / 2, onv = val > 0.5f;
+        fill(sx, sy, sw, sh, onv ? (off ? C_PANEL2 : C_ACCENT) : C_BG, 255);
+        fill(onv ? sx + sw - 20 : sx + 2, sy + 2, 18, sh - 4, onv ? C_BG : (off ? C_PANEL2 : C_DIM), 255);
+        text(lx, ly + 20, off ? 0x4a505a : onv ? C_TEXT : C_DIM, 0.6f, onv ? "On" : "Off");
+    } else if (seg) {
+        /* a few choices side by side */
+        int sy = y + h - 24, sh = 19, gw = cw / nseg;
+        for (int i = 0; i < nseg; i++) {
+            int sel = (int)(val + 0.5f) == i, sx = lx + i * gw;
+            fill(sx, sy, gw - 3, sh, sel ? (off ? C_PANEL2 : on ? C_ACCENT : C_WAVE) : C_BG, 255);
+            int tw = (int)(strlen(seg[i]) * FONT_CW * 0.6f);
+            text(sx + (gw - 3 - tw) / 2, sy + 2, sel ? C_BG : (off ? 0x4a505a : C_DIM), 0.6f, seg[i]);
+        }
+    } else if (d->kind == K_ENUM) {
+        /* more choices: the one set, and where it is among them */
+        grid_value(id, v, sizeof v);
+        text_right(x + w - 12, ly, vc, 0.72f, v);
+        int nn = (int)(d->max - d->min) + 1, gw = cw / nn;
+        for (int i = 0; i < nn; i++)
+            fill(lx + i * gw, by + 4, gw - 2, 4, (int)(val + 0.5f) == i ? bar : C_BG, 255);
+    } else {
+        /* a slider: from the middle when it goes either way */
+        grid_value(id, v, sizeof v);
+        text_right(x + w - 12, ly, vc, 0.72f, v);
+        float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
+        fill(lx, by, cw, 6, C_BG, 255);
+        if (d->min < 0 && d->max > 0) {
+            int z = lx + (int)(cw * (-d->min / (d->max - d->min))), p = lx + (int)(cw * t);
+            fill(p < z ? p : z, by, abs(p - z), 6, bar, 255);
+            fill(z, by - 3, 1, 12, C_DIM, 255);
+        } else fill(lx, by, (int)(cw * t), 6, bar, 255);
+        fill(lx + (int)(cw * t) - 2, by - 4, 4, 14, off ? C_PANEL2 : on ? C_TEXT : C_DIM, 255);
+    }
+}
+
+static void draw_grid(int y0, int y1)
+{
+    int pg = G.page, cur = PAGE_ROWS[pg][G.sel_row[pg]];
+    int ncol = 0, maxr = 0, r = 0;
+    for (int i = 0; GRID[pg][i] != ROW_END; i++) {
+        if (GRID[pg][i] <= GCOL(0)) { ncol++; r = 0; } else if (++r > maxr) maxr = r;
+    }
+    int gap = 8, cw = (SW - 32 - (ncol - 1) * gap) / ncol, th = 24;
+    int rh = (y1 - y0 - th) / (maxr ? maxr : 1); if (rh > 58) rh = 58;
+    int c = -1;
+    for (int i = 0; GRID[pg][i] != ROW_END; i++) {
+        int id = GRID[pg][i];
+        if (id <= GCOL(0)) {
+            c++; r = 0;
+            char t[48]; snprintf(t, sizeof t, GRID_TITLE[GCOL(0) - id], G.sel + 1);
+            int x = 16 + c * (cw + gap);
+            text(x + 2, y0 + 2, C_ACCENT, 0.7f, t);
+            fill(x, y0 + th - 6, cw, 2, C_PANEL2, 255);
+            continue;
+        }
+        grid_cell(16 + c * (cw + gap), y0 + th + r * rh, cw, rh - 4, id, id == cur);
+        r++;
+    }
+}
+
 static void draw(void)
 {
     Engine *e = &G.eng;
@@ -1743,33 +1918,39 @@ static void draw(void)
         text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
     }
 
+    /* a one-screen page: smaller lanes, and the controls in columns below */
+    int grid = grid_page(G.page);
+    G.lane_h = !grid ? 66 : G.page == PG_TRACK ? 56 : G.page == PG_SEQ ? 48 : 42;
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
+    int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid ? 2 : 12);
 
     /* meters */
-    if (G.page == PG_SEQ) draw_master_seq();
+    if (G.page == PG_SEQ) draw_master_seq(grid ? ym - 4 : 342);
     else {
-        meter(16, 356, 488, "IN", e->in_peak);
-        meter(520, 356, 488, "OUT", e->out_peak);
+        meter(16, ym, 488, "IN", e->in_peak);
+        meter(520, ym, 488, "OUT", e->out_peak);
     }
 
     /* tabs */
+    int ty = grid ? ym + (G.page == PG_SEQ ? 40 : 22) : 384, tbh = grid ? 34 : 38;
     for (int i = 0; i < PG_N; i++) {
         int x = 16 + i * 142, on = i == G.page;
-        fill(x, 384, 136, 38, on ? C_PANEL2 : C_PANEL, 255);
-        if (on) fill(x, 418, 136, 4, C_ACCENT, 255);
+        fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
+        if (on) fill(x, ty + tbh - 4, 136, 4, C_ACCENT, 255);
         char nmt[24];
         if (i == PG_TRACK) snprintf(nmt, sizeof nmt, "TRACK %d", G.sel + 1);
         else if (i == PG_SEQ) snprintf(nmt, sizeof nmt, "SEQ %d", G.sel + 1);
         else snprintf(nmt, sizeof nmt, "%s", PAGE_NAME[i]);
-        text(x + (136 - (int)strlen(nmt) * FONT_CW) / 2, 391, on ? C_TEXT : C_DIM, 1.f, nmt);
+        text(x + (136 - (int)strlen(nmt) * FONT_CW) / 2, ty + (tbh - FONT_CH) / 2 - 1, on ? C_TEXT : C_DIM, 1.f, nmt);
     }
+    if (grid) draw_grid(ty + tbh + 8, 724);
 
     /* rows */
     int y0 = 432, rh = 36;
     int n = row_count(G.page);
     int sc0 = G.scroll[G.page];
     if (G.page == PG_FILES && n == 0) textf(32, y0 + 10, C_DIM, 1.f, "No recordings yet in %s", G.rec_dir);
-    for (int k = 0; k < ROWS_VISIBLE && sc0 + k < n; k++) {
+    for (int k = 0; !grid && k < ROWS_VISIBLE && sc0 + k < n; k++) {
         int i = sc0 + k, y = y0 + k * rh, on = i == G.sel_row[G.page];
         if (on) { fill(16, y, 992, rh - 4, C_PANEL2, 255); fill(16, y, 5, rh - 4, C_ACCENT, 255); }
         char v[300], nm2[120];
@@ -1834,7 +2015,7 @@ static void draw(void)
             text(300, y + 4, id == ROW_DIAG ? (on ? C_ACCENT : C_TEXT) : C_DIM, id == ROW_DIAG ? 0.8f : 1.f, v);
         }
     }
-    if (n > ROWS_VISIBLE) {
+    if (!grid && n > ROWS_VISIBLE) {
         int th = ROWS_VISIBLE * rh * ROWS_VISIBLE / n;
         fill(1010, y0 + sc0 * (ROWS_VISIBLE * rh - th) / (n - ROWS_VISIBLE), 4, th, C_DIM, 200);
     }
@@ -1845,16 +2026,26 @@ static void draw(void)
         : G.page == PG_MIDI ? "A learn (move a knob / hit a pad)   Y unmap   B cancel   L1/R1 tab"
         : G.held[A_SEL] ? "SEL+ START all  A trk  B undo  X erase  Y resamp  L2 mute  R2 all  UP fx  DN rev  RT xy  L1 scatter  R1 next"
                         : "A rec  B play (hold: erase)  X dub  Y rev  L2/R2 track  START save  hold SELECT";
+    if (grid && !G.held[A_SEL]) {
+        /* the selected control in full, and how to work the page */
+        int id = PAGE_ROWS[G.page][G.sel_row[G.page]];
+        char v[300]; value_str(id, v, sizeof v);
+        int nw = text(16, 736, C_TEXT, 0.9f, PD[id].name);
+        char vf[100]; fit(vf, sizeof vf, v, 50);
+        text(16 + nw + 16, 736, C_ACCENT, 0.9f, vf);
+        text_right(1008, 739, C_DIM, 0.75f, "UP/DN move  L/R set  hold SELECT");
+    } else
     text(16, 736 + (G.held[A_SEL] && G.page < PG_MIDI ? 3 : 0), C_DIM, G.held[A_SEL] && G.page < PG_MIDI ? 0.75f : 0.9f, hint);
 
     /* toast */
     if (now < G.toast_until) {
         int w = (int)strlen(G.toast) * FONT_CW + 40; if (w > 980) w = 980;
         int x = (SW - w) / 2;
-        fill(x, 290, w, 44, C_BG, 235);
-        fill(x, 290, 4, 44, G.toast_bad ? C_REC : C_ACCENT, 255);
+        int y = grid ? 150 : 290;
+        fill(x, y, w, 44, C_BG, 235);
+        fill(x, y, 4, 44, G.toast_bad ? C_REC : C_ACCENT, 255);
         char t[90]; fit(t, sizeof t, G.toast, 78);
-        text(x + 20, 300, C_TEXT, 1.f, t);
+        text(x + 20, y + 10, C_TEXT, 1.f, t);
     }
     SDL_RenderPresent(G.ren);
 }
@@ -1933,6 +2124,9 @@ static int selftest(const char *shot_dir)
     WAITMS(500);
     CHECK(e->out_peak > 0.01f, "processed mix is audible");
     SHOT("shot_fx");
+    G.page = PG_TRACK; G.sel = 1; G.sel_row[PG_TRACK] = 5; WAITMS(100);
+    SHOT("shot_track");
+    G.sel = 0; G.page = PG_FX;
 
     /* X/Y mix: SELECT + right, the point in track 1's corner, then off again */
     set_held(A_SEL, 1); set_held(A_RIGHT, 1); set_held(A_RIGHT, 0); set_held(A_SEL, 0);
@@ -2072,6 +2266,8 @@ int main(int argc, char **argv)
     snprintf(G.rec_dir, sizeof G.rec_dir, "%s", rd && *rd ? rd : "recordings");
     snprintf(G.cfg_path, sizeof G.cfg_path, "%s", cf && *cf ? cf : "conduit.cfg");
     mkdirs(G.rec_dir);
+    G.lane_h = 66;
+    if (getenv("CONDUIT_GRID") && *getenv("CONDUIT_GRID") == '1') { grid_on = 1; grid_apply(); }
 
     if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
     build_targets();
