@@ -875,6 +875,46 @@ static void test_fx_send(void)
     eng_free(e); free(e);
 }
 
+/* The X/Y mix's gain sits on top of the volume, in what's heard and in the
+ * saved mix, and fades rather than steps */
+static void test_xy_gain(void)
+{
+    Engine *e = calloc(1, sizeof *e);
+    eng_init(e, 2);
+    int n = 24000 + CD_XFADE;
+    float *st = malloc(sizeof(float) * 2 * n);
+    fill_sine(st, n, 300, 0.5f);
+    eng_set_buffer(e, 0, st, n);
+    e->trk[0].p[P_FX_SEND] = 0;
+    eng_play_toggle(e, 0);
+    float pk, lev[3], gains[3] = { 1.f, 0.5f, 0.f };
+    for (int k = 0; k < 3; k++) {
+        e->trk[0].xy = gains[k];
+        run_silence(e, 8192, &pk);
+        run_silence(e, 8192, &pk);
+        lev[k] = pk;
+    }
+    char msg[160];
+    snprintf(msg, sizeof msg, "X/Y gain 1: the volume (%.3f); 0.5: half (%.3f); 0: silent (%.4f)", lev[0], lev[1], lev[2]);
+    T(fabsf(lev[0] - 0.45f) < 0.01f && fabsf(lev[1] - 0.225f) < 0.01f && lev[2] < 1e-4f, msg);
+    /* a jump from 0 to 1 is smoothed: no step bigger than the sine's own */
+    float in[512 * 2] = { 0 }, out[512 * 2], prev[2] = { 0, 0 };
+    e->trk[0].xy = 1.f;
+    eng_push_input(e, in, 512); eng_render(e, out, 512);
+    float step = max_step(out, 512, prev);
+    snprintf(msg, sizeof msg, "X/Y gain changes fade in (largest step %.4f)", step);
+    T(step < 0.02f, msg);
+    int m; float *b;
+    e->trk[0].xy = 0.5f;
+    b = bounce(e, &m);
+    float top = 0; for (int i = 0; b && i < 2 * m; i++) top = fmaxf(top, fabsf(b[i]));
+    free(b);
+    snprintf(msg, sizeof msg, "the saved mix follows the X/Y gain (%.3f)", top);
+    T(fabsf(top - 0.225f) < 0.01f, msg);
+    free(st);
+    eng_free(e); free(e);
+}
+
 /* Volume past 100%: clean gain until it would distort, then a warm soft
  * clip (rounded, a little asymmetric, no DC left), never a hard clip */
 static void test_warm_clip(void)
@@ -1179,6 +1219,7 @@ static void test_delay_controls(void)
 int main(void)
 {
     test_rate_mismatch();
+    test_xy_gain();
     test_overdub_monitor();
     Engine *e = calloc(1, sizeof *e);
     T(eng_init(e, 10) == 0, "engine init");

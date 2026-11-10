@@ -33,6 +33,9 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Loop window and analog sticks:** play a window of a track and scrub it
   along with the left stick; bend the pitch and flip the direction with the
   right one (or with MIDI knobs).
+- **X/Y mix:** SELECT + → turns the sticks into a vector mixer for the four
+  tracks, one in each corner of a pad: glide between them with the left
+  stick, throw the mix with the right one.
 - **Looper:** pitch ±24 semitones plus fine tune (tape-style varispeed),
   reverse, overdub (in time, unlimited layers), adjustable loop decay (while
   overdubbing or always), and click-free seams, jumps, starts and stops.
@@ -75,6 +78,8 @@ Everything acts on the **selected track** (highlighted; L2 / R2 to change it).
 | SELECT + R2 | Play / stop all tracks |
 | SELECT + ↑ | FX send on / off for the selected track (back on at the amount it had) |
 | SELECT + ↓ | Reverb send on / off for the selected track (back on at the amount it had, 50% the first time) |
+| SELECT + → | X/Y mix on / off: the sticks mix the four tracks (below) |
+| SELECT + ← | Centre the X/Y mix |
 | MENU | Quit |
 
 On a device or USB gamepad with analog sticks:
@@ -85,6 +90,25 @@ On a device or USB gamepad with analog sticks:
 | Left ↑ / ↓ (flick) | Double / halve the window |
 | Right ↑↓ | Bend the pitch up to ±12 semitones; springs back when let go |
 | Right ← / → (flick) | Reverse / forward |
+
+With **X/Y mix** on (SELECT + →, `X/Y MIX` and a small pad in the top right),
+the sticks mix the four tracks instead, one in each corner of a square:
+**1** top left, **2** top right, **3** bottom left, **4** bottom right.
+
+| Stick | Action |
+|---|---|
+| Left | Move the mix point (further = faster); it stays where you leave it |
+| Right | Throw the mix from there (the full pad); springs back when let go |
+
+In the middle every track plays at its own volume; towards a corner the
+nearest track stays at its volume and the others fade (on an edge, the two
+tracks on it stay up). A thin bar in each track's number box and *xy* in its
+info show the gain. The mix sits on top of each track's volume, mute and pan,
+and what you save or resample is the mix as you hear it (each track's file
+too). SELECT + ← puts the point back in the middle; SELECT + → again gives
+the sticks back to the window and bend, and every track its full volume. With
+MIDI, map *X/Y mix: left - right* and *top - bottom* to two knobs (moving
+either turns the X/Y mix on) and *X/Y mix on/off* to a pad.
 
 ### Tracks and sync
 

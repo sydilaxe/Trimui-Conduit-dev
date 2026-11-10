@@ -184,6 +184,7 @@ int eng_init(Engine *e, int max_seconds)
         if (!t->buf) { eng_free(e); return -1; }
         eng_default_track(t->p);
         t->gs = t->p[P_FX_SEND];
+        t->xy = 1.f;
         t->last_od = -1;
     }
     if (fx_init(&e->fx) || verb_init(&e->verb)) { eng_free(e); return -1; }
@@ -547,7 +548,7 @@ static void prep(const Engine *e, const Track *t, TC *c)
     c->keep = 1.f - clampf(tp[P_DECAY], 0.f, 1.f);
     c->decay_always = tp[P_DECAY_MODE] > 0.5f && c->keep < 1.f && t->decay_armed;
     /* pan: a stereo balance with equal power, unity in the middle */
-    float vol = tp[P_MUTE] > 0.5f ? 0.f : tp[P_VOLUME];
+    float vol = tp[P_MUTE] > 0.5f ? 0.f : tp[P_VOLUME] * clampf(t->xy, 0.f, 1.f);
     double a = (clampf(tp[P_PAN], -1.f, 1.f) + 1.0) * M_PI / 4;
     c->gl = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
     c->gr = vol * (float)fmin(1.0, M_SQRT2 * sin(a));
@@ -1139,7 +1140,7 @@ int eng_mix_begin(Engine *e, Mixdown *m, int max_frames)
             m->pos[k] = rev ? end - 1 : m->ls[k];
             if (L / user > longest) longest = L / user;
         }
-        float vol = tp[P_VOLUME];
+        float vol = tp[P_VOLUME] * clampf(t->xy, 0.f, 1.f);   /* as heard, X/Y mix included */
         double a = (clampf(tp[P_PAN], -1.f, 1.f) + 1.0) * M_PI / 4;
         m->gl[k] = vol * (float)fmin(1.0, M_SQRT2 * cos(a));
         m->gr[k] = vol * (float)fmin(1.0, M_SQRT2 * sin(a));

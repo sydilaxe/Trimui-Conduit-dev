@@ -158,9 +158,9 @@ static const char *const ACT_KEY[A_N] = { "up", "down", "left", "right", "a", "b
 
 /* things a button or a MIDI note / CC can do */
 enum { ACT_REC, ACT_PLAY, ACT_DUB, ACT_ERASE, ACT_UNDO, ACT_REVERSE, ACT_MUTE, ACT_NEXT, ACT_PREV,
-       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB };
+       ACT_SEL, ACT_SAVE_ALL, ACT_SAVE_TRACK, ACT_RESAMPLE, ACT_PLAY_ALL, ACT_FX, ACT_VERB, ACT_XY };
 /* the live controls (analog sticks, or mapped knobs) */
-enum { LIVE_WPOS, LIVE_WSIZE, LIVE_BEND, LIVE_DIR };
+enum { LIVE_WPOS, LIVE_WSIZE, LIVE_BEND, LIVE_DIR, LIVE_MIX_X, LIVE_MIX_Y };
 
 /* MIDI map: every target can take one note, CC or the pitch wheel */
 enum { MT_ACT, MT_PARAM, MT_LIVE };
@@ -197,6 +197,13 @@ typedef struct {
     float ax[4];        /* sticks: left x/y, right x/y, -1..1 */
     int flick[4];       /* a stick pushed past halfway (edge-triggered moves) */
     int bend_on, bend_trk;  /* the right stick is bending this track */
+    /* X/Y mix: the sticks mix the four tracks, one in each corner of a pad
+     * (1 top left, 2 top right, 3 bottom left, 4 bottom right). The left
+     * stick moves the point and leaves it there; the right stick throws it
+     * from there and springs back. -1..1, y down. */
+    int xy_on;
+    float xy_x, xy_y;       /* where the left stick (or MIDI) left it */
+    float xy_px, xy_py;     /* where it is, with the right stick's throw */
     Uint32 last_tick;
 
     Target tg[MAX_TARGETS]; Bind bind[MAX_TARGETS]; int ntg;
@@ -307,6 +314,7 @@ static void build_targets(void)
         { ACT_PLAY_ALL, "play_all", "Play / stop all tracks" },
         { ACT_SAVE_ALL, "save_all", "Save mix + tracks" }, { ACT_SAVE_TRACK, "save_track", "Save track" },
         { ACT_RESAMPLE, "resample", "Resample mix into track" },
+        { ACT_XY, "xy_toggle", "X/Y mix on/off (sticks)" },
     };
     char k[32];
     G.ntg = 0;
@@ -316,6 +324,8 @@ static void build_targets(void)
     add_target(MT_LIVE, LIVE_WSIZE, -1, "window_size", "Window size");
     add_target(MT_LIVE, LIVE_BEND, -1, "bend", "Pitch bend (+-12 st)");
     add_target(MT_LIVE, LIVE_DIR, -1, "direction", "Direction (rev / fwd)");
+    add_target(MT_LIVE, LIVE_MIX_X, -1, "xy_mix_x", "X/Y mix: left - right");
+    add_target(MT_LIVE, LIVE_MIX_Y, -1, "xy_mix_y", "X/Y mix: top - bottom");
     for (int t = 0; t < CD_TRACKS; t++) {
         snprintf(k, sizeof k, "t%d_rec", t + 1); add_target(MT_ACT, ACT_REC, t, k, "Track %d record / stop", t + 1);
         snprintf(k, sizeof k, "t%d_play", t + 1); add_target(MT_ACT, ACT_PLAY, t, k, "Track %d play / stop", t + 1);
@@ -684,6 +694,43 @@ static void do_undo(int k)
                left, left == 1 ? "" : "s");
 }
 
+/* the X/Y mix: each track's gain from the point. Bilinear corner weights,
+ * each over the largest, so the nearest corner stays at its own volume
+ * (the middle is the mix as it was) and the far ones fade (square root:
+ * equal power along an edge) */
+static void xy_gains(float x, float y, float g[CD_TRACKS])
+{
+    float u = (x + 1) * 0.5f, v = (y + 1) * 0.5f;
+    u = u < 0 ? 0 : u > 1 ? 1 : u; v = v < 0 ? 0 : v > 1 ? 1 : v;
+    float w[CD_TRACKS] = { (1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v }, mx = 0;
+    for (int k = 0; k < CD_TRACKS; k++) if (w[k] > mx) mx = w[k];
+    for (int k = 0; k < CD_TRACKS; k++) g[k] = mx > 0 ? sqrtf(w[k] / mx) : 1.f;
+}
+
+static void xy_apply(void)
+{
+    float g[CD_TRACKS];
+    xy_gains(G.xy_px, G.xy_py, g);
+    for (int k = 0; k < CD_TRACKS; k++) trk(k)->xy = G.xy_on ? g[k] : 1.f;
+}
+
+static void xy_toggle(void)
+{
+    G.xy_on = !G.xy_on;
+    if (G.xy_on && G.bend_on) { trk(G.bend_trk)->bend = 0.f; G.bend_on = 0; }
+    for (int i = 0; i < 4; i++) G.flick[i] = 1;   /* a stick held over doesn't flick when it's switched off */
+    xy_apply();
+    toast(0, G.xy_on ? "Sticks: X/Y mix (1 2 / 3 4 in the corners; SELECT+left centres it)"
+                     : "Sticks: window and bend (X/Y mix off, every track back to its volume)");
+}
+
+static void xy_centre(void)
+{
+    G.xy_x = G.xy_y = 0.f;
+    if (!G.xy_on) { toast(0, "X/Y mix centred (SELECT+right switches it on)"); return; }
+    toast(0, "X/Y mix centred");
+}
+
 static void do_action(int act, int k)
 {
     Track *t = trk(k);
@@ -709,6 +756,7 @@ static void do_action(int act, int k)
         else t->p[P_FX_SEND] = G.send_mem[k] > 0.f ? G.send_mem[k] : 1.f;
         toast(0, "Track %d FX send %s", k + 1, t->p[P_FX_SEND] > 0.f ? "on" : "off (dry)");
         break;
+    case ACT_XY: xy_toggle(); break;
     case ACT_VERB:
         if (t->p[P_VERB_SEND] > 0.f) { G.verb_mem[k] = t->p[P_VERB_SEND]; t->p[P_VERB_SEND] = 0.f; }
         else t->p[P_VERB_SEND] = G.verb_mem[k] > 0.f ? G.verb_mem[k] : 0.5f;
@@ -748,6 +796,10 @@ static void live_set(int what, int k, float v)   /* v 0..1 (bend: 0.5 = none) */
         break;
     }
     case LIVE_DIR: t->p[P_REVERSE] = v < 0.5f ? 1.f : 0.f; break;
+    case LIVE_MIX_X: case LIVE_MIX_Y:
+        if (what == LIVE_MIX_X) G.xy_x = v * 2 - 1; else G.xy_y = v * 2 - 1;
+        if (!G.xy_on) xy_toggle();
+        break;
     }
 }
 
@@ -824,14 +876,36 @@ static void midi_tick(void)
 
 /* ----------------------------------------------------- the sticks */
 
+static float dead(float v, float d) { return fabsf(v) < d ? 0.f : (v - (v > 0 ? d : -d)) / (1 - d); }
+
+/* X/Y mix: the left stick moves the point (full tilt crosses the pad in about
+ * a second and a half) and it stays; the right stick throws it from there */
+static void xy_sticks(float dt)
+{
+    if (G.have_gc) {
+        for (int i = 0; i < 2; i++) {
+            float v = dead(G.ax[i], 0.15f), *p = i ? &G.xy_y : &G.xy_x;
+            *p += (v > 0 ? v * v : -v * v) * 1.4f * dt;
+            *p = *p < -1 ? -1 : *p > 1 ? 1 : *p;
+        }
+    }
+    float tx = G.have_gc ? dead(G.ax[2], 0.12f) : 0.f, ty = G.have_gc ? dead(G.ax[3], 0.12f) : 0.f;
+    G.xy_px = G.xy_x + tx * 2; G.xy_py = G.xy_y + ty * 2;
+    G.xy_px = G.xy_px < -1 ? -1 : G.xy_px > 1 ? 1 : G.xy_px;
+    G.xy_py = G.xy_py < -1 ? -1 : G.xy_py > 1 ? 1 : G.xy_py;
+    xy_apply();
+}
+
 /* left stick: x scrubs the window along the track, y doubles / halves it.
- * right stick: y bends the pitch (springs back), x flicks the direction. */
+ * right stick: y bends the pitch (springs back), x flicks the direction.
+ * With the X/Y mix on, both mix the tracks instead (xy_sticks). */
 static void sticks_tick(void)
 {
     Uint32 now = SDL_GetTicks();
     float dt = G.last_tick ? (now - G.last_tick) / 1000.f : 0.f;
     if (dt > 0.1f) dt = 0.1f;
     G.last_tick = now;
+    if (G.xy_on) { xy_sticks(dt); return; }
     if (!G.have_gc) return;
     Track *t = trk(G.sel);
     /* scrub: full tilt moves the window 60% of the track a second */
@@ -924,6 +998,8 @@ static void press(int a)
         case A_R2: G.trig_used[A_R2] = 1; play_all(); break;
         case A_UP: do_action(ACT_FX, G.sel); break;
         case A_DOWN: do_action(ACT_VERB, G.sel); break;
+        case A_RIGHT: xy_toggle(); break;
+        case A_LEFT: xy_centre(); break;
         case A_MENU: G.running = 0; break;
         case A_L1: case A_R1:
             if (G.held[A_L1] && G.held[A_R1]) G.running = 0;
@@ -1287,6 +1363,12 @@ static void draw_lane(int k)
     textf(32, y + 2, on ? C_ACCENT : C_TEXT, 1.4f, "%d", k + 1);
     text(30, y + 42, sc, 0.7f, st);
     if (t->p[P_MUTE] > 0.5f) text(64, y + 6, C_REC, 0.8f, "M");
+    if (G.xy_on) {
+        /* the X/Y mix's gain for this track */
+        int bh = LANE_H - 8, gh = (int)(bh * t->xy + 0.5f);
+        fill(84, y + 4, 4, bh, C_BG, 255);
+        fill(84, y + 4 + bh - gh, 4, gh, C_ACCENT, 255);
+    }
     /* waveform */
     fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
     int mid = y + LANE_H / 2;
@@ -1328,6 +1410,7 @@ static void draw_lane(int k)
             if (t->p[P_FX_SEND] < 0.005f) snprintf(fx, sizeof fx, "dry  ");
             else if (t->p[P_FX_SEND] < 0.995f) snprintf(fx, sizeof fx, "fx %.0f%%  ", t->p[P_FX_SEND] * 100);
             if (t->p[P_VERB_SEND] > 0.005f) { size_t fl = strlen(fx); snprintf(fx + fl, sizeof fx - fl, "rev %.0f%%  ", t->p[P_VERB_SEND] * 100); }
+            if (G.xy_on) { size_t fl = strlen(fx); snprintf(fx + fl, sizeof fx - fl, "xy %.0f%%  ", t->xy * 100); }
             snprintf(info, sizeof info, "%s%s  %s%s%svol %.0f%%  %s", len, eng_track_synced(&G.eng, k) ? "" : " free",
                      t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", fx, t->p[P_VOLUME] * 100, pn);
         }
@@ -1375,8 +1458,22 @@ static void draw(void)
         else snprintf(tb, sizeof tb, "first loop sets the bar");
         text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
     }
-    char nm[40]; fit(nm, sizeof nm, G.in_open, 22);
-    text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
+    if (G.xy_on) {
+        /* the X/Y pad: tracks 1 2 / 3 4 in the corners, the point, and where the left stick left it */
+        int px = 960, py = 6, pw = 48, ph = 44;
+        fill(px, py, pw, ph, C_PANEL2, 255);
+        static const char *const cn[CD_TRACKS] = { "1", "2", "3", "4" };
+        for (int k = 0; k < CD_TRACKS; k++)
+            text(px + (k & 1 ? pw - 9 : 2), py + (k & 2 ? ph - 15 : 0), k == G.sel ? C_ACCENT : C_DIM, 0.55f, cn[k]);
+        int bx = px + (int)((G.xy_x + 1) * 0.5f * (pw - 6)), by = py + (int)((G.xy_y + 1) * 0.5f * (ph - 6));
+        int dx = px + (int)((G.xy_px + 1) * 0.5f * (pw - 6)), dy = py + (int)((G.xy_py + 1) * 0.5f * (ph - 6));
+        fill(bx + 1, by + 1, 4, 4, C_DIM, 255);
+        fill(dx, dy, 6, 6, C_ACCENT, 255);
+        text_right(px - 8, 18, C_ACCENT, 0.8f, "X/Y MIX");
+    } else {
+        char nm[40]; fit(nm, sizeof nm, G.in_open, 22);
+        text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
+    }
 
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
 
@@ -1561,6 +1658,17 @@ static int selftest(const char *shot_dir)
     WAITMS(500);
     CHECK(e->out_peak > 0.01f, "processed mix is audible");
     SHOT("shot_fx");
+
+    /* X/Y mix: SELECT + right, the point in track 1's corner, then off again */
+    set_held(A_SEL, 1); set_held(A_RIGHT, 1); set_held(A_RIGHT, 0); set_held(A_SEL, 0);
+    CHECK(G.xy_on, "SELECT + right turns the X/Y mix on");
+    G.xy_x = -1; G.xy_y = -0.4f; WAITMS(200);
+    fprintf(stderr, "     X/Y gains %.2f %.2f %.2f %.2f\n", t1->xy, t2->xy, trk(2)->xy, trk(3)->xy);
+    CHECK(t1->xy > 0.99f && t2->xy < 0.01f && trk(2)->xy > 0.6f && trk(2)->xy < 0.7f, "X/Y mix: track 1 up, track 2 out, track 3 between");
+    SHOT("shot_xy");
+    set_held(A_SEL, 1); set_held(A_LEFT, 1); set_held(A_LEFT, 0); set_held(A_RIGHT, 1); set_held(A_RIGHT, 0); set_held(A_SEL, 0);
+    WAITMS(50);
+    CHECK(!G.xy_on && G.xy_x == 0 && t1->xy == 1.f && t2->xy == 1.f, "X/Y mix centred and off: every track at its volume");
 
     float before = t1->buf[2 * (t1->len / 3)];
     G.sel = 0;

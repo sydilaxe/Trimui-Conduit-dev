@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     float p[P_TRACK_N];        /* written by UI thread, read by audio thread */
     volatile float bend;       /* live pitch bend in semitones (stick / MIDI), not saved */
+    volatile float xy;         /* the X/Y mixer's gain 0..1 (1: off), on top of the volume, not saved */
 
     float *buf;                /* stereo interleaved sample memory */
     int cap;                   /* capacity in frames */
