@@ -23,6 +23,10 @@ this repo) in `Conduit/`, plus `mustardos/mux_launch.sh`, `wake_screen.sh` (run 
 `CONDUIT_SCREEN_WAKE` once the window is up, as the screen can stay dark on MustardOS) and the list
 glyph. Only MustardOS is built for: no TrimUI OS or KNULLI packages.
 
+`mux_launch.sh` holds MustardOS's idle off while the app is open (its Idle Mute would stop the sound two
+minutes after the last press): `idle_inhibit` re-set every 2 s and `caffeine`, given back on exit. The block
+is the same in Jaffedrone, Columbia Street, HI5, RadioScan and Conduit; keep the copies the same.
+
 `make test` runs the engine, MIDI parser and WAV unit tests (ASan/UBSan); `make test-e2e` runs the
 desktop build headless on SDL's disk audio driver (`tests/e2e.sh`: two synced tracks, FX, overdub,
 save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`). Keep both
