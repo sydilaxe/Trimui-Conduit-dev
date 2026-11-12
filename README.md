@@ -486,6 +486,20 @@ With the card mounted on a computer you can also run `make install SD=/path/to/c
 Recordings go to `recordings/` inside the app folder (on the MicroSD card).
 To change this, set `CONDUIT_REC_DIR` in the launcher.
 
+### Updates
+
+Conduit updates itself, as Columbia Street, HI5, RadioScan and Jaffedrone do. A few seconds after it
+starts (once Wi-Fi is up) it asks GitHub for this repo's latest release, and tries again every minute,
+five times in all, if it can't reach it. When the release is newer, a prompt covers the screen: **A**
+downloads `Conduit-mustardos.muxapp`, puts the new files in place and restarts Conduit; **B** (or MENU)
+closes it, and it is offered again next time. The sound keeps going under the prompt. Your settings
+(`conduit.cfg`), your recordings and the logs are never touched; files that haven't changed aren't
+written; and every new file is written and checked beside the old one before any is replaced, so a
+failed or broken download changes nothing. `log.txt` says what was found (`update: the latest release
+is v…`). `CONDUIT_UPDATE=0` in `launch.sh` turns the check off (an update replaces `launch.sh`, so set
+it again after). A copy from before the updater has none: install the first release with it by hand
+once.
+
 ### MustardOS's idle
 
 Two minutes without a press, MustardOS dims the screen, drops the processor to its slowest and, with
@@ -524,6 +538,7 @@ make test         # engine + WAV unit tests (ASan/UBSan)
 make test-e2e     # the desktop build, run headless on SDL's disk audio driver,
                   #   with a FIFO standing in for a USB MIDI device
 make package      # build/Conduit-mustardos.muxapp
+make update-test  # the self-update end to end, against tools/fake_github.py (a local GitHub)
 make version      # the version built (CONDUIT_VERSION in src/main.c, or VERSION=x.y.z)
 ```
 
@@ -539,6 +554,18 @@ on the website, or run the workflow by hand with a tag): the packages are built 
 tag's version and published with `.github/release-notes.md`. Keep the README's
 **Latest release** line at the version in `src/main.c`; CI checks it.
 
+The updater (`src/update.c`, `src/net.c`, the same as Columbia Street's and Jaffedrone's)
+reaches GitHub over HTTPS with [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) 3.6.7, which
+`make` downloads (pinned by its SHA-256) into `third_party/mbedtls/` (not committed), builds with
+`tools/mbedtls.mk` and links in statically. Mbed TLS is under Apache-2.0 (or GPL-2.0-or-later); the
+package carries its licence as `LICENSE-mbedtls.txt`. `Apps/Conduit/cacert.pem` is curl's extract of
+Mozilla's CA certificates (MPL-2.0), which the updater checks GitHub's certificate against.
+`build/conduit_update APP_DIR [--force]` (from `src/main_update.c`) checks for a newer release and
+installs it into `APP_DIR`, as the app does on **A**; point `CONDUIT_UPDATE_API` at
+`tools/fake_github.py` (`http://127.0.0.1:8766/latest.json`) to try one without the internet.
+Releases must stay full releases marked Latest (the updater reads GitHub's latest release, which
+leaves pre-releases and drafts out), tagged `v<number>.<number>...`, higher each time.
+
 Keyboard on desktop: arrows, X=A, Z=B, S=X, A=Y, Q/W=L1/R1, 1/2=L2/R2,
 Backspace=SELECT, Enter=START, Esc=MENU.
 
@@ -546,6 +573,7 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 
 ```
 src/main.c          UI, input (buttons, sticks, MIDI map), devices, save/load, self-test
+src/update.c, net.c self-update: GitHub's latest release, the download and unzip; HTTPS (Mbed TLS)
 src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock, the USB link), overdub/undo, FX, mixdown
 src/midi.c          USB MIDI in and clock out: raw ALSA devices, parser, reader thread; the USB link's leader side
 src/link.c          the clock link between Bricks: the bottom port as a USB gadget (configfs, FunctionFS), finding followers

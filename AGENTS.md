@@ -23,6 +23,13 @@ this repo) in `Conduit/`, plus `mustardos/mux_launch.sh`, `wake_screen.sh` (run 
 `CONDUIT_SCREEN_WAKE` once the window is up, as the screen can stay dark on MustardOS) and the list
 glyph. Only MustardOS is built for: no TrimUI OS or KNULLI packages.
 
+The app updates itself from this repo's latest GitHub release (`src/update.c`, `src/net.c` with Mbed TLS,
+`Apps/Conduit/cacert.pem`; the same updater as Columbia Street's and Jaffedrone's): releases must stay
+full releases marked Latest with a `v<number>...` tag higher than the last, and the package's name and
+its `Conduit/` folder must stay as they are, or installed copies stop finding their updates. An update
+never writes the user's files (`conduit.cfg`, `recordings/`, the logs): keep `keep_users` in `update.c`
+in step with any new one. `make update-test` (CI runs it) checks it end to end.
+
 `mux_launch.sh` holds MustardOS's idle off while the app is open (its Idle Mute would stop the sound two
 minutes after the last press): `idle_inhibit` re-set every 2 s and `caffeine`, given back on exit. The block
 is the same in Jaffedrone, Columbia Street, HI5, RadioScan and Conduit; keep the copies the same.
