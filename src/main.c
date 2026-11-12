@@ -8,6 +8,8 @@
 #include "wav.h"
 #include "midi.h"
 #include "font_data.h"
+#include "net.h"
+#include "update.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -285,6 +287,10 @@ typedef struct {
     float peak[CD_TRACKS][LANE_W]; unsigned pk_version[CD_TRACKS]; int pk_len[CD_TRACKS]; Uint32 pk_time[CD_TRACKS];
 
     int held[A_N]; Uint32 next_rep[A_N], held_since[A_N];
+    /* the self-update prompt (update.h): up once a newer release is found, the sound going on underneath;
+     * upd_ate: a press it took, so letting go of that button does nothing either */
+    int upd_auto, upd_open, upd_asked, upd_tries, upd_ate[A_N];
+    Uint32 upd_next, relaunch_at;
     int joy_map[A_N];   /* raw joystick button index, -1 = none */
     int have_gc, swap_ab, last_raw_btn, axis_held[2];
     float ax[4];        /* sticks: left x/y, right x/y, -1..1 */
@@ -1231,9 +1237,17 @@ static void release(int a)
         do_action(a == A_L2 ? ACT_PREV : ACT_NEXT, G.sel);
 }
 
+static void update_input(int a);
+
 static void set_held(int a, int down)
 {
     if (a < 0 || a >= A_N) return;
+    if (down && !G.held[a] && G.upd_open) { /* the prompt takes the press */
+        G.held[a] = 1; G.held_since[a] = SDL_GetTicks(); G.upd_ate[a] = 1;
+        update_input(a);
+        return;
+    }
+    if (!down && G.held[a] && G.upd_ate[a]) { G.held[a] = 0; G.upd_ate[a] = 0; return; }
     if (down && !G.held[a]) {
         G.held[a] = 1;
         G.held_since[a] = SDL_GetTicks();
@@ -1245,6 +1259,7 @@ static void set_held(int a, int down)
 static void repeat_tick(void)
 {
     Uint32 now = SDL_GetTicks();
+    if (G.upd_open) return;
     /* hold B for a second: stop and erase the selected track (no new recording) */
     if (G.held[A_B] && !G.held[A_SEL] && !G.b_erased && G.page != PG_FILES && G.page != PG_MIDI && now - G.held_since[A_B] >= 1000) {
         G.b_erased = 1;
@@ -2025,6 +2040,84 @@ static void draw_grid(int y0, int y1)
     }
 }
 
+/* ------------------------------------------------------- self-update */
+
+/* a few seconds after starting (so Wi-Fi is up), then every minute until GitHub has answered, five tries */
+static void update_watch(Uint32 now)
+{
+    const UpdateStatus *u = update_status();
+    static int logged;
+    if ((u->state == UP_CURRENT || u->state == UP_AVAILABLE) && !logged) {
+        logged = 1;
+        fprintf(stderr, "[conduit] update: the latest release is v%s, this is v" CONDUIT_VERSION "\n", u->latest);
+    }
+    if (G.upd_auto && (u->state == UP_IDLE || u->state == UP_CHECK_FAILED) && G.upd_tries < 5 &&
+        (Sint32)(now - G.upd_next) >= 0) {
+        if (u->state == UP_CHECK_FAILED) fprintf(stderr, "[conduit] %s\n", u->err);
+        G.upd_tries++;
+        G.upd_next = now + 60000;
+        update_check_start();
+    }
+    if (u->state == UP_AVAILABLE && !G.upd_asked) G.upd_asked = G.upd_open = 1;
+    if (u->state == UP_INSTALLED && !G.relaunch_at) {
+        fprintf(stderr, "[conduit] update: v%s installed, relaunching\n", u->latest);
+        G.relaunch_at = now + 1200; /* long enough to read "restarting" */
+        if (!G.relaunch_at) G.relaunch_at = 1;
+    }
+    if (G.relaunch_at && (Sint32)(now - G.relaunch_at) >= 0) G.running = 0;
+}
+
+/* A updates (or tries again), B or MENU closes the prompt */
+static void update_input(int a)
+{
+    const UpdateStatus *u = update_status();
+    if (u->state == UP_INSTALLING || u->state == UP_INSTALLED) return;
+    if (a == A_A && (u->state == UP_AVAILABLE || u->state == UP_FAILED)) { update_install_start("."); return; }
+    if (a == A_B || a == A_MENU) {
+        G.upd_open = 0;
+        if (u->state == UP_AVAILABLE) toast(0, "v%s will be offered again next time", u->latest);
+    }
+}
+
+static void text_c(int y, Uint32 c, float sc, const char *s)
+{
+    text((SW - (int)(strlen(s) * FONT_CW * sc)) / 2, y, c, sc, s);
+}
+
+static void draw_update(void)
+{
+    if (!G.upd_open) return;
+    const UpdateStatus *u = update_status();
+    int st = u->state, w = 720, h = 330, x = (SW - w) / 2, y = 190;
+    char b[200];
+    fill(0, 0, SW, SH, 0x000000, 150);
+    fill(x, y, w, h, C_PANEL, 255);
+    fill(x, y, w, 4, C_ACCENT, 255);
+    snprintf(b, sizeof b, "Conduit v%s is out", u->latest);
+    text_c(y + 30, C_ACCENT, 1.5f, b);
+    text_c(y + 84, C_DIM, 0.9f, "this is v" CONDUIT_VERSION);
+    if (st == UP_INSTALLING || st == UP_INSTALLED) {
+        int bw = 520, bx = (SW - bw) / 2, p = st == UP_INSTALLED ? 100 : u->progress;
+        p = p < 0 ? 0 : p > 100 ? 100 : p;
+        fill(bx, y + 150, bw, 24, C_BG, 255);
+        fill(bx + 3, y + 153, (bw - 6) * p / 100, 18, C_ACCENT, 255);
+        if (st == UP_INSTALLED) snprintf(b, sizeof b, "updated - restarting...");
+        else snprintf(b, sizeof b, "downloading... %d%%", p);
+        text_c(y + 196, C_TEXT, 1.f, b);
+        return;
+    }
+    if (st == UP_FAILED) {
+        char e[70]; fit(e, sizeof e, u->err, 60);
+        text_c(y + 146, C_REC, 1.f, e);
+        text_c(y + 186, C_DIM, 0.9f, "nothing was changed");
+        text_c(y + h - 60, C_TEXT, 1.f, "A try again    B close");
+        return;
+    }
+    text_c(y + 146, C_TEXT, 1.f, "Download it and restart?");
+    text_c(y + 186, C_DIM, 0.9f, "your recordings and settings stay as they are");
+    text_c(y + h - 60, C_TEXT, 1.f, "A update and restart    B not now");
+}
+
 static void draw(void)
 {
     Engine *e = &G.eng;
@@ -2206,6 +2299,8 @@ static void draw(void)
         text_right(1008, 739, C_DIM, 0.75f, "UP/DN move  L/R set  hold SELECT");
     } else
     text(16, 736 + (G.held[A_SEL] && G.page < PG_MIDI ? 3 : 0), C_DIM, G.held[A_SEL] && G.page < PG_MIDI ? 0.75f : 0.9f, hint);
+
+    draw_update();
 
     /* toast */
     if (now < G.toast_until) {
@@ -2422,6 +2517,26 @@ static int selftest(const char *shot_dir)
     WAITMS(300);
     CHECK(trk(2)->playing && eng_track_synced(e, 2) && trk(2)->cycles == 1 && e->p[P_MSC_MODE] == SC_OFF && t1->p[P_MUTE] > 0.5f,
           "SELECT + Y: the mosaic resampled into track 3 as heard, a bar in sync, the others muted");
+    /* the update prompt, as if v9.9.9 were out: it takes the buttons (the tracks stay as they are), B closes it */
+    {
+        UpdateStatus *u = update_status();
+        snprintf(u->latest, sizeof u->latest, "9.9.9");
+        u->state = UP_AVAILABLE;
+        update_watch(SDL_GetTicks());
+        CHECK(G.upd_open, "a newer release brings up the update prompt");
+        WAITMS(100);
+        SHOT("shot_update");
+        int sel = G.sel, playing = trk(G.sel)->playing, page = G.page;
+        set_held(A_X, 1); set_held(A_X, 0); set_held(A_R1, 1); set_held(A_R1, 0); set_held(A_L2, 1); set_held(A_L2, 0);
+        WAITMS(100);
+        CHECK(G.upd_open && G.sel == sel && G.page == page && trk(G.sel)->playing == playing,
+              "the prompt takes the buttons: the tracks and the page stay as they are");
+        set_held(A_B, 1); set_held(A_B, 0);
+        CHECK(!G.upd_open && u->state == UP_AVAILABLE, "B closes it (offered again next time)");
+        set_held(A_R1, 1); set_held(A_R1, 0);
+        CHECK(G.page != page, "the buttons work again");
+        u->state = UP_CURRENT;
+    }
     fprintf(stderr, "SELFTEST PASS (driver %s, xruns in %u)\n", SDL_GetCurrentAudioDriver(), (unsigned)e->overruns);
     return 0;
 }
@@ -2448,6 +2563,14 @@ int main(int argc, char **argv)
     for (int k = 0; k < CD_TRACKS; k++) { G.send_mem[k] = 1.f; G.verb_mem[k] = 0.5f; }
     G.sel_row[PG_FX] = 1;   /* the first setting, under its heading */
     load_cfg();
+    /* the self-updater: on by default on the TrimUI; CONDUIT_UPDATE=0 (in launch.sh) turns it off,
+     * CONDUIT_UPDATE=1 turns it on in a desktop build */
+#ifdef CONDUIT_TRIMUI
+    G.upd_auto = !test;
+#endif
+    if (getenv("CONDUIT_UPDATE")) G.upd_auto = atoi(getenv("CONDUIT_UPDATE")) != 0;
+    if (G.upd_auto) net_init("cacert.pem");
+    fprintf(stderr, "[conduit] update check %s (%s)\n", G.upd_auto ? "on" : "off", update_asset());
 
     SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS)) {
@@ -2479,11 +2602,13 @@ int main(int argc, char **argv)
     else toast(0, "Input: %s", G.in_open);
 
     G.running = 1;
+    G.upd_next = SDL_GetTicks() + 5000;
     int rc = 0;
     if (test) rc = selftest(shots);
     else
         while (G.running) {
             tick_ui();
+            update_watch(SDL_GetTicks());
             draw();
             SDL_Delay(4);
         }
@@ -2495,5 +2620,5 @@ int main(int argc, char **argv)
     SDL_DestroyTexture(G.font); SDL_DestroyRenderer(G.ren); SDL_DestroyWindow(G.win);
     SDL_Quit();
     eng_free(&G.eng);
-    return rc;
+    return update_status()->state == UP_INSTALLED ? RELAUNCH_STATUS : rc; /* launch.sh starts the new version */
 }

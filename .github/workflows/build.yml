@@ -45,6 +45,8 @@ jobs:
           echo "built version $v"
           file build/trimui/conduit | grep -q "ARM aarch64"
           strings build/trimui/conduit | grep -qx "Conduit $v"
+          # the updater compares that version with the latest release's tag, and fetches this package
+          strings build/trimui/conduit | grep -qx "/Conduit-mustardos.muxapp"
           # runs on the firmware's own SDL2, and needs nothing newer than glibc 2.28
           readelf -d build/trimui/conduit | grep -q "libSDL2-2.0.so.0"
           # (a bare "! cmd" can't fail a step under set -e, hence the ifs)
@@ -54,7 +56,9 @@ jobs:
           # the app folder in "Conduit/", with mux_launch.sh, wake_screen.sh and the list glyph
           m=build/Conduit-mustardos.muxapp
           ls -l $m
-          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt; do
+          # the updater needs cacert.pem for HTTPS; the binary carries Mbed TLS, so its licence goes along
+          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt \
+              cacert.pem LICENSE-mbedtls.txt; do
             unzip -l $m | grep -q "Conduit/$f$" || { echo "::error::$m has no $f"; exit 1; }
           done
           test "$(unzip -p $m Conduit/VERSION)" = "$v"
@@ -78,6 +82,8 @@ jobs:
         run: make test
       - name: End-to-end (SDL disk audio, headless)
         run: make -j"$(nproc)" test-e2e
+      - name: Self-update against a local fake GitHub
+        run: make update-test
       - uses: actions/upload-artifact@v4
         if: always()
         with:

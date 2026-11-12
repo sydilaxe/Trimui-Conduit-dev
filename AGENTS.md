@@ -23,6 +23,13 @@ this repo) in `Conduit/`, plus `mustardos/mux_launch.sh`, `wake_screen.sh` (run 
 `CONDUIT_SCREEN_WAKE` once the window is up, as the screen can stay dark on MustardOS) and the list
 glyph. Only MustardOS is built for: no TrimUI OS or KNULLI packages.
 
+The app updates itself from this repo's latest GitHub release (`src/update.c`, `src/net.c` with Mbed TLS,
+`Apps/Conduit/cacert.pem`; the same updater as Columbia Street's and Jaffedrone's): releases must stay
+full releases marked Latest with a `v<number>...` tag higher than the last, and the package's name and
+its `Conduit/` folder must stay as they are, or installed copies stop finding their updates. An update
+never writes the user's files (`conduit.cfg`, `recordings/`, the logs): keep `keep_users` in `update.c`
+in step with any new one. `make update-test` (CI runs it) checks it end to end.
+
 `make test` runs the engine, MIDI parser and WAV unit tests (ASan/UBSan); `make test-e2e` runs the
 desktop build headless on SDL's disk audio driver (`tests/e2e.sh`: two synced tracks, FX, overdub,
 save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`). Keep both

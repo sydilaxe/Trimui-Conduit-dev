@@ -18,7 +18,13 @@ export CONDUIT_CFG="$(pwd)/conduit.cfg"
 # use the firmware's controller mappings when it has them
 [ -f /usr/lib/gamecontrollerdb.txt ] && export SDL_GAMECONTROLLERCONFIG_FILE=/usr/lib/gamecontrollerdb.txt
 
-./conduit > log.txt 2>&1
+# Optional: CONDUIT_UPDATE=0 ./conduit  never checks GitHub for a new version (an update replaces this
+# file: set it again after)
+# exit status 75: the app has just updated itself, so start the new version
+while :; do
+    ./conduit > log.txt 2>&1
+    [ $? -eq 75 ] || break
+done
 sync
 
 [ -n "$gov_was" ] && echo "$gov_was" > $CPU/cpu0/cpufreq/scaling_governor 2>/dev/null

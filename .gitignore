@@ -5,3 +5,5 @@ Apps/Conduit/log.txt
 Apps/Conduit/conduit_diag.txt
 Apps/Conduit/recordings/*.wav
 __pycache__/
+third_party/mbedtls/
+third_party/mbedtls.tar.bz2
