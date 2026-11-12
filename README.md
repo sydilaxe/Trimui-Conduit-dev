@@ -500,6 +500,16 @@ is v…`). `CONDUIT_UPDATE=0` in `launch.sh` turns the check off (an update repl
 it again after). A copy from before the updater has none: install the first release with it by hand
 once.
 
+### MustardOS's idle
+
+Two minutes without a press, MustardOS dims the screen, drops the processor to its slowest and, with
+**Idle Mute** on (its default), mutes the sound; later it can put the device to sleep. Music goes on with
+the hands off, so the sound would stop a while after the last press and come back with the next. While
+Conduit is open, `mux_launch.sh` asks MustardOS not to: it sets MustardOS's `idle_inhibit` (again every
+2 s, as MustardOS's idle watcher clears it when the buttons go quiet) and its `caffeine` flag, and gives both
+back when Conduit closes. An empty file named `no_keep_awake` in the app folder leaves MustardOS's idle as
+it is.
+
 ## USB audio notes
 
 USB input needs two things from the firmware: the USB-C port must be in

@@ -30,6 +30,10 @@ its `Conduit/` folder must stay as they are, or installed copies stop finding th
 never writes the user's files (`conduit.cfg`, `recordings/`, the logs): keep `keep_users` in `update.c`
 in step with any new one. `make update-test` (CI runs it) checks it end to end.
 
+`mux_launch.sh` holds MustardOS's idle off while the app is open (its Idle Mute would stop the sound two
+minutes after the last press): `idle_inhibit` re-set every 2 s and `caffeine`, given back on exit. The block
+is the same in Jaffedrone, Columbia Street, HI5, RadioScan and Conduit; keep the copies the same.
+
 `make test` runs the engine, MIDI parser and WAV unit tests (ASan/UBSan); `make test-e2e` runs the
 desktop build headless on SDL's disk audio driver (`tests/e2e.sh`: two synced tracks, FX, overdub,
 save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`). Keep both
