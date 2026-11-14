@@ -43,6 +43,7 @@ void eng_default_params(float *p)
     eng_default_verb(p);
     p[P_IN_GAIN] = 0.f;     p[P_TRIGGER] = 0.f; p[P_THRESH] = -36.f;
     p[P_AUTOPLAY] = 1.f;    p[P_SAVE_FMT] = 0.f; p[P_DUB_ALIGN] = 0.f;
+    p[P_IN_CHAN] = IN_CH_STEREO; p[P_OUT_MONO] = 0.f;
     p[P_IN_FX_SEND] = 0.f;  p[P_IN_VERB_SEND] = 0.f; p[P_IN_PRINT] = IN_PRINT_DRY;
     {   /* master scatter: as a track's */
         float tp[P_TRACK_N]; eng_default_track(tp);
@@ -1059,6 +1060,7 @@ void eng_render(Engine *e, float *out, int frames)
     transport_update(e, p);
     int beats = (int)p[P_BEATS]; if (beats < 1) beats = 1;
     float gain = db2lin(p[P_IN_GAIN]);
+    int in_ch = (int)(p[P_IN_CHAN] + 0.5f), out_mono = p[P_OUT_MONO] > 0.5f;
     float thr = db2lin(p[P_THRESH]);
     float inmax = 0, outmax = 0;
     const float fade = 1.f / CD_FADE;
@@ -1122,6 +1124,9 @@ void eng_render(Engine *e, float *out, int frames)
                     while (e->ring_frac >= 1.0) { e->ring_frac -= 1.0; r++; }
                 }
             }
+            if (in_ch == IN_CH_MONO) il = ir = (il + ir) * 0.5f;
+            else if (in_ch == IN_CH_LEFT) ir = il;
+            else if (in_ch == IN_CH_RIGHT) il = ir;
             float m = fabsf(il) > fabsf(ir) ? fabsf(il) : fabsf(ir);
             if (m > inmax) inmax = m;
             inlev[i] = m;
@@ -1294,9 +1299,11 @@ void eng_render(Engine *e, float *out, int frames)
         float master = p[P_MASTER];
         for (int i = 0; i < n; i++) {
             e->mon_g += (mon_t - e->mon_g) * fade;
+            float oc[2];
+            for (int c = 0; c < 2; c++) oc[c] = mix[2 * i + c] * master + inb[2 * i + c] * (1 - ifs[i]) * e->mon_g;
+            if (out_mono) oc[0] = oc[1] = (oc[0] + oc[1]) * 0.5f;
             for (int c = 0; c < 2; c++) {
-                float o = mix[2 * i + c] * master + inb[2 * i + c] * (1 - ifs[i]) * e->mon_g;
-                o = sat(o);   /* loops + monitored input round off instead of clipping */
+                float o = sat(oc[c]);   /* loops + monitored input round off instead of clipping */
                 float a = fabsf(o); if (a > outmax) outmax = a;
                 out[2 * (done + i) + c] = o;
             }
