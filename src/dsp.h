@@ -32,6 +32,7 @@ typedef enum {
     P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
     /* IO */
     P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN,
+    P_IN_CHAN, P_OUT_MONO,     /* which input channels are taken; the output in mono */
     /* the live input through the effects */
     P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
     /* master scatter: the whole mix (after the FX, before the live input),
@@ -54,6 +55,10 @@ enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start
 /* P_IN_PRINT: takes are the input as it comes (its effects only heard), or
  * the input through its effects (printed into the loop) */
 enum { IN_PRINT_DRY = 0, IN_PRINT_WET = 1 };
+/* P_IN_CHAN: the input as it comes (a mono device arrives on both sides),
+ * both sides summed to the middle, or one side only on both (a guitar in
+ * input 1 of a stereo interface) */
+enum { IN_CH_STEREO = 0, IN_CH_MONO = 1, IN_CH_LEFT = 2, IN_CH_RIGHT = 3 };
 /* P_SC_MODE: what the pattern does to the steps it picks (Chop: only they
  * sound) */
 enum { SC_OFF, SC_SHUFFLE, SC_STUTTER, SC_REVERSE, SC_CHOP, SC_SCATTER, SC_GRAIN, SC_N };
