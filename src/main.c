@@ -1451,27 +1451,36 @@ static void well(int x, int y, int w, int h, Uint32 c)
 
 /* the lamps: a jewel lens with Fresnel rings, dull copper when off; lit, it glows in its colour */
 static SDL_Texture *tex_glow, *tex_disc, *tex_lens, *tex_knob;
-/* a black knob, knurled round its edge, glossy on top */
+/* a Fairfield-style knob: a glossy black dome with one bright curved reflection, on a finely
+ * knurled skirt (the pointer, a teardrop nub, is drawn with it) */
 static void make_knob(void)
 {
-    enum { N = 96 };
+    enum { N = 128 };
     Uint32 *px = malloc(N * N * 4);
     for (int y = 0; y < N; y++)
         for (int x = 0; x < N; x++) {
             float dx = (x + 0.5f - N / 2.f) / (N / 2.f), dy = (y + 0.5f - N / 2.f) / (N / 2.f), d = sqrtf(dx * dx + dy * dy);
-            float aa = d > 1 ? 0 : d > 0.97f ? (1 - d) / 0.03f : 1;
-            int v;
-            if (d > 0.8f) {
-                /* the knurl: ridges, lit a little from above */
-                float ang = atan2f(dy, dx), ridge = 0.5f + 0.5f * cosf(ang * 40.f);
-                v = (int)(0x1c + 0x18 * ridge - 14.f * dy);
-            } else {
-                float hl = expf(-((dx + 0.25f) * (dx + 0.25f) * 2.f + (dy + 0.38f) * (dy + 0.38f) * 9.f) * 4.f);
-                v = (int)(0x17 + 10.f * (0.8f - d) + 120.f * hl);
-                if (d > 0.76f) v = 0x0c;                       /* the step down to the knurl */
+            float aa = d > 1 ? 0 : d > 0.975f ? (1 - d) / 0.025f : 1;
+            float v;
+            if (d > 0.84f) {
+                /* the skirt: fine ridges, lit from above */
+                float ang = atan2f(dy, dx), ridge = 0.5f + 0.5f * cosf(ang * 64.f);
+                v = 0x14 + 0x16 * ridge - 12.f * dy;
+            } else if (d > 0.79f) v = 0x08;                     /* the step up to the dome */
+            else {
+                /* the dome: darker to its edge, a curved band of light across its top, and a
+                 * faint one from below */
+                float u = d / 0.79f;
+                v = 0x16 + 0x0a * (1 - u * u);
+                float band = dy + 0.42f + 0.55f * dx * dx;          /* a curve, bowed down at the sides */
+                float hl = expf(-band * band * 70.f) * (1.f - fabsf(dx) * 1.1f);
+                if (hl < 0) hl = 0;
+                v += 175.f * hl;
+                float lo = dy - 0.55f + 0.5f * dx * dx;
+                v += 22.f * expf(-lo * lo * 60.f) * (1.f - fabsf(dx));
             }
-            v = v < 0 ? 0 : v > 255 ? 255 : v;
-            px[y * N + x] = (Uint32)(aa * 255) << 24 | (Uint32)(v << 16 | v << 8 | (v + 2 > 255 ? 255 : v + 2));
+            int iv = v < 0 ? 0 : v > 255 ? 255 : (int)v;
+            px[y * N + x] = (Uint32)(aa * 255) << 24 | (Uint32)(iv << 16 | iv << 8 | (iv + 3 > 255 ? 255 : iv + 3));
         }
     tex_knob = SDL_CreateTexture(G.ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, N, N);
     if (tex_knob) { SDL_UpdateTexture(tex_knob, NULL, px, N * 4); SDL_SetTextureBlendMode(tex_knob, SDL_BLENDMODE_BLEND); }
@@ -2191,28 +2200,52 @@ static void tape_l(int x, int y, Uint32 c, float ts, const char *v, int room)
     tape(x + tw + 8, y, c, sc, v, room);
 }
 
-/* a knob: pointer nub and white line at v (0..1, from 7:30 round to 4:30); punched dots at
- * its ends (and the middle, when it goes either way), or at each of n positions */
+/* a knob, pointing its teardrop nub at v (0..1, from 7:30 round to 4:30); the big one has a
+ * white line too, as the pedals' main knob does. Punched dots for the positions of a selector
+ * (and the middle of one that goes either way). It reaches 1.3 r with its nub. */
 #define KNOB_A0 (0.75f * 3.14159265f)
 #define KNOB_SPAN (1.5f * 3.14159265f)
-static void knob(int cx, int cy, int r, float v, int bip, int n, int off)
+static void knob(int cx, int cy, int r, float v, int bip, int n, int off, int line)
 {
     float a = KNOB_A0 + KNOB_SPAN * v, ca = cosf(a), sa = sinf(a);
-    int nd = n > 1 ? n : bip ? 3 : 2;
+    int nd = n > 1 ? n : bip ? 1 : 0;
     for (int i = 0; i < nd; i++) {
-        float t = nd > 1 ? (float)i / (nd - 1) : 0, b = KNOB_A0 + KNOB_SPAN * t;
-        int dx = cx + (int)lroundf((r + 6) * cosf(b)), dy = cy + (int)lroundf((r + 6) * sinf(b));
-        disc(dx, dy + 1, 2.0f, tex_disc, INK_LIGHT, 200);
-        disc(dx, dy, 1.8f, tex_disc, INK, 255);
+        float t = n > 1 ? (float)i / (n - 1) : 0.5f, b = KNOB_A0 + KNOB_SPAN * t;
+        float rr = r * 1.42f + 3;
+        int dx = cx + (int)lroundf(rr * cosf(b)), dy = cy + (int)lroundf(rr * sinf(b));
+        disc(dx, dy + 1, 1.9f, tex_disc, INK_LIGHT, 200);
+        disc(dx, dy, 1.7f, tex_disc, INK, 255);
     }
-    disc(cx + 2, cy + 3, r + 1.5f, tex_disc, 0x55575b, 150);                 /* its shadow on the metal */
-    disc(cx + (int)(ca * r * 0.92f), cy + (int)(sa * r * 0.92f), r * 0.34f, tex_disc, 0x1d1e21, 255);  /* the nub */
-    if (tex_knob) { SDL_Rect d = { cx - r, cy - r, 2 * r, 2 * r }; SDL_SetTextureAlphaMod(tex_knob, 255); SDL_RenderCopy(G.ren, tex_knob, NULL, &d); }
-    Uint32 lc = off ? 0x7d8085 : 0xf4f4f2;
-    for (int i = 0; i <= 8; i++) {
-        float f = 0.28f + 0.72f * i / 8;
-        disc(cx + (int)lroundf(ca * r * f), cy + (int)lroundf(sa * r * f), r * 0.075f + 0.6f, tex_disc, lc, 255);
+    /* its shadow on the metal, the nub's too */
+    disc(cx + 2, cy + 3, r + 2.f, tex_disc, 0x4d4f53, 140);
+    for (int i = 0; i <= 10; i++) {
+        float f = 0.7f + 0.6f * i / 10, nr = r * (0.33f - 0.27f * i / 10);
+        disc(cx + 2 + (int)lroundf(ca * r * f), cy + 3 + (int)lroundf(sa * r * f), nr + 1, tex_disc, 0x4d4f53, 110);
     }
+    /* the nub: a teardrop growing out of the skirt */
+    for (int i = 0; i <= 14; i++) {
+        float f = 0.68f + 0.62f * i / 14, nr = r * (0.34f - 0.29f * i / 14);
+        disc(cx + (int)lroundf(ca * r * f), cy + (int)lroundf(sa * r * f), nr, tex_disc, 0x17181b, 255);
+    }
+    for (int i = 0; i <= 8; i++) {   /* its ridge catching the light */
+        float f = 0.95f + 0.3f * i / 8;
+        disc(cx + (int)lroundf(ca * r * f - sa * r * 0.05f), cy + (int)lroundf(sa * r * f + ca * r * 0.05f) - 1,
+             r * 0.045f + 0.4f, tex_disc, 0x55585e, 200);
+    }
+    if (tex_knob) {
+        SDL_Rect d = { cx - r, cy - r, 2 * r, 2 * r };
+        SDL_SetTextureAlphaMod(tex_knob, 255);
+        SDL_SetTextureColorMod(tex_knob, 255, 255, 255);
+        SDL_RenderCopy(G.ren, tex_knob, NULL, &d);
+    }
+    if (line) {
+        Uint32 lc = off ? 0x7d8085 : 0xf4f4f2;
+        for (int i = 0; i <= 10; i++) {
+            float f = 0.25f + 0.62f * i / 10;
+            disc(cx + (int)lroundf(ca * r * f), cy + (int)lroundf(sa * r * f), r * 0.06f + 0.6f, tex_disc, lc, 255);
+        }
+    }
+    if (off) disc(cx, cy, r + 1.f, tex_disc, ALU, 90);   /* doing nothing now: dulled */
 }
 
 /* a mini toggle on its nut: lever up (-1), down (1) or in the middle (0) */
@@ -2276,14 +2309,14 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     float val = *pp(id);
     int nseg = 0; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
     int tall = h >= 76;   /* room for a knob or a toggle with its name stamped under it, as on the pedals */
-    if (tall) { int lw = stamp_w(nm, ts, 1); stamp_ink(x + (w - lw) / 2, y + h - 20, ink, ts, 1, nm); vy = y + 3; }
+    if (tall) { ts = 0.62f; int lw = stamp_w(nm, ts, 1); stamp_ink(x + (w - lw) / 2, y + h - 17, ink, ts, 1, nm); vy = y + 1; }
     else stamp_ink(lx, ly, ink, ts, 1, nm);
     int onoff = d->kind == K_ENUM && d->labels == L_ONOFF;
     if (onoff || (seg && nseg <= 3)) {
         /* a toggle: up for on (or the first choice), down for off (or the last), the middle
          * for the one between; its positions stamped beside it */
         int n = onoff ? 2 : nseg, idx = onoff ? (val > 0.5f ? 0 : 1) : (int)(val + 0.5f);
-        int cx = tall ? x + w / 2 : x + w - pad - 24, cy = tall ? y + 20 + (h - 42) / 2 : y + h / 2 + 1;
+        int cx = tall ? x + w / 2 : x + w - pad - 24, cy = tall ? y + 19 + (h - 38) / 2 : y + h / 2 + 1;
 
         toggle(cx, cy, n == 3 && idx == 1 ? 0 : idx == 0 ? -1 : 1);
         for (int i = 0; i < n; i++) {
@@ -2309,23 +2342,24 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     int size = knob_size(id), kr, cx, cy, n = 0;
     if (tall) {
         /* the value on tape over it, the name under it */
-        int big = (h - 42) / 2 - 6, wr = w / 2 - 14; if (big > wr) big = wr; if (big > 34) big = 34;
-        kr = size == 2 ? big : size == 1 ? big * 4 / 5 : big * 11 / 20; if (kr < 10) kr = 10;
-        cx = x + w / 2; cy = y + 20 + (h - 42) / 2;
+        /* as big as the room between the tape and the name allows, nub and all */
+        int big = (int)(((h - 38) / 2) / 1.27f), wr = (int)((w / 2 - 6) / 1.3f); if (big > wr) big = wr; if (big > 44) big = 44;
+        kr = size == 2 ? big : size == 1 ? big * 4 / 5 : big * 3 / 5; if (kr < 9) kr = 9;
+        cx = x + w / 2; cy = y + 19 + (h - 38) / 2;
     } else {
-        int base = (h - 14) / 2; if (base > 17) base = 17;
-        kr = size == 2 ? base + 3 : size == 1 ? base : base * 7 / 10; if (kr > h / 2 - 3) kr = h / 2 - 3; if (kr < 8) kr = 8;
-        cx = x + w - pad - (size == 2 ? 17 : kr) - 4; cy = y + h / 2 + 1;
+        int big = (int)((h / 2 + 1) / 1.3f);
+        kr = size == 2 ? big : size == 1 ? big * 5 / 6 : big * 2 / 3; if (kr < 8) kr = 8;
+        cx = x + w - pad - (int)(big * 1.15f); cy = y + h / 2 + 1;
     }
     float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
     if (d->kind == K_ENUM) { n = (int)(d->max - d->min) + 1; if (n > 12) n = 0; t = n > 1 ? (float)(int)(val - d->min + 0.5f) / (n - 1) : 0; }
-    knob(cx, cy, kr, t, d->min < 0 && d->max > 0, n, off);
+    knob(cx, cy, kr, t, d->min < 0 && d->max > 0, n, off, size == 2);
     if (seg) snprintf(v, sizeof v, "%s", seg[(int)(val + 0.5f) < nseg ? (int)(val + 0.5f) : 0]);
     else grid_value(id, v, sizeof v);
     if (tall) {
-        float sc = (int)(strlen(v) * FONT_CW * ts) + 8 <= w - 8 ? ts : 0.55f;
+        float sc = (int)(strlen(v) * FONT_CW * 0.6f) + 8 <= w - 8 ? 0.6f : 0.55f;
         tape_l(x + (w - (int)(strlen(v) * FONT_CW * sc) - 8) / 2, vy, vc, sc, v, w - 4);
-    } else tape_l(lx, vy, vc, ts, v, cx - kr - 8 - lx);
+    } else tape_l(lx, vy, vc, ts, v, cx - (int)(kr * 1.3f) - 4 - lx);
 }
 
 /* a one-screen page's columns, and the most rows in one */
