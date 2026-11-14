@@ -15,8 +15,11 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 
 ## Features
 
-- **Input:** any capture device SDL sees. USB devices are picked
-  automatically and hot-plugging is followed. 48 kHz stereo float internally;
+- **Input and output:** any device SDL sees. A USB interface is picked
+  automatically for both, so the mix plays through it and the speakers stay
+  silent, and hot-plugging is followed: plug one in and the sound moves to
+  it, unplug it and it comes back to the speakers. **IO → Input device** and
+  **Output device** pick another (*Auto* is USB first, else the default). 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
   **IO → Channels** takes the input as stereo, summed to mono, or from one
   side only; **IO → Output** plays the mix in stereo or mono.

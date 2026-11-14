@@ -280,7 +280,7 @@ typedef struct {
     SDL_Window *win; SDL_Renderer *ren; SDL_Texture *font;
     SDL_AudioDeviceID out_dev, in_dev;
     char in_name[256], out_name[256];      /* "" = system default */
-    char in_open[256];                      /* what is actually open */
+    char in_open[256], out_open[256];       /* what is actually open */
     int in_failed, out_block;
     int b_erased;                           /* B held: the loop was erased */
     int sel;                                /* selected track */
@@ -596,18 +596,35 @@ static SDL_AudioSpec want_spec(int capture)
     return w;
 }
 
+/* the output to open: the one chosen, else the first USB playback device (the interface, so the
+ * mix goes there and not to the speakers), else the system default (NULL) */
+static const char *choose_output(void)
+{
+    if (G.out_name[0]) return G.out_name;
+    int n = SDL_GetNumAudioDevices(0);
+    for (int i = 0; i < n; i++) {
+        const char *nm = SDL_GetAudioDeviceName(i, 0);
+        if (ci_contains(nm, "usb")) return nm;
+    }
+    return NULL;
+}
+
 static int open_output(void)
 {
-    if (G.out_dev) { SDL_CloseAudioDevice(G.out_dev); perf_audio_closed(0); }
+    if (G.out_dev) { SDL_CloseAudioDevice(G.out_dev); G.out_dev = 0; perf_audio_closed(0); }
     SDL_AudioSpec w = want_spec(0), got;
-    G.out_dev = SDL_OpenAudioDevice(G.out_name[0] ? G.out_name : NULL, 0, &w, &got, 0);
-    if (!G.out_dev && G.out_name[0]) {
-        toast(1, "Output '%s' unavailable, using default", G.out_name);
+    const char *want = choose_output();
+    char wn[256]; snprintf(wn, sizeof wn, "%s", want ? want : "");
+    G.out_dev = SDL_OpenAudioDevice(want, 0, &w, &got, 0);
+    if (!G.out_dev && want) {
+        toast(1, "Output '%s' unavailable, using default", wn);
+        want = NULL;
         G.out_dev = SDL_OpenAudioDevice(NULL, 0, &w, &got, 0);
     }
+    snprintf(G.out_open, sizeof G.out_open, "%s", G.out_dev ? (want ? wn : "System default") : "None");
     if (!G.out_dev) { perf_log("ERROR", "no audio output: %s", SDL_GetError()); return -1; }
     G.out_block = got.samples;
-    perf_audio_open(0, got.freq, got.samples, got.channels, G.out_name[0] ? G.out_name : "System default");
+    perf_audio_open(0, got.freq, got.samples, got.channels, G.out_open);
     set_latency();
     SDL_PauseAudioDevice(G.out_dev, 0);
     return 0;
@@ -662,7 +679,7 @@ static void cycle_device(int capture, int dir)
     if (idx == 0) cur[0] = 0;
     else snprintf(cur, 256, "%s", SDL_GetAudioDeviceName(idx - 1, capture));
     if (capture) open_input(1);
-    else { open_output(); toast(0, "Output: %s", cur[0] ? cur : "System default"); }
+    else { open_output(); toast(0, "Output: %s", G.out_open); }
 }
 
 /* ----------------------------------------------------------- actions */
@@ -1396,16 +1413,29 @@ static void handle_event(SDL_Event *e)
             const char *nm = SDL_GetAudioDeviceName((int)e->adevice.which, 1);
             if ((ci_contains(nm, "usb") && !ci_contains(G.in_open, "usb")) || !G.in_dev) open_input(1);
         }
+        if (!e->adevice.iscapture && !G.out_name[0]) {
+            /* an interface plugged in: the mix moves to it, off the speakers */
+            const char *nm = SDL_GetAudioDeviceName((int)e->adevice.which, 0);
+            if ((ci_contains(nm, "usb") && !ci_contains(G.out_open, "usb")) || !G.out_dev) {
+                if (!open_output()) toast(0, "Output: %s", G.out_open);
+            }
+        }
         break;
     case SDL_AUDIODEVICEREMOVED:
         perf_log("AUDIO", "%s device went (%s)", e->adevice.iscapture ? "a capture" : "an output",
                  (e->adevice.iscapture ? e->adevice.which == G.in_dev : e->adevice.which == G.out_dev) ? "the one in use" : "not in use");
         if (G.in_dev && e->adevice.which == G.in_dev) {
-            SDL_CloseAudioDevice(G.in_dev); G.in_dev = 0;
+            SDL_CloseAudioDevice(G.in_dev); G.in_dev = 0; perf_audio_closed(1);
             toast(1, "Input disconnected");
             open_input(0);
         }
-        if (G.out_dev && e->adevice.which == G.out_dev) { G.out_name[0] = 0; open_output(); }
+        if (G.out_dev && e->adevice.which == G.out_dev) {
+            /* unplugged: back to the next USB device or the speakers (a chosen one is kept, for
+             * when it comes back) */
+            SDL_CloseAudioDevice(G.out_dev); G.out_dev = 0; perf_audio_closed(0);
+            toast(1, "Output disconnected");
+            if (!open_output()) toast(0, "Output: %s", G.out_open);
+        }
         break;
     }
 }
@@ -2240,7 +2270,7 @@ static void row_info(int id, char *v, size_t sz, int maxch)
     Engine *e = &G.eng;
     char md[200];
     if (id == ROW_IN_DEV) fit(v, sz, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", maxch);
-    else if (id == ROW_OUT_DEV) fit(v, sz, G.out_name[0] ? G.out_name : "System default", maxch);
+    else if (id == ROW_OUT_DEV) fit(v, sz, G.out_name[0] ? G.out_name : "Auto (USB first, else default)", maxch);
     else if (id == ROW_FOLDER) fit(v, sz, G.rec_dir, maxch);
     else if (id == ROW_TEMPO) {
         int nfol, lstate; midi_link_status(&nfol, &lstate);
