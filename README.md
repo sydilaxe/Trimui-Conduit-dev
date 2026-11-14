@@ -18,6 +18,8 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 - **Input:** any capture device SDL sees. USB devices are picked
   automatically and hot-plugging is followed. 48 kHz stereo float internally;
   SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
+  **IO → Channels** takes the input as stereo, summed to mono, or from one
+  side only; **IO → Output** plays the mix in stereo or mono.
 - **Scatter and SEQ:** cut a track's loop into slices on the beat (from a
   bar to a 64th, with triplets and dotted values) and play them in a pattern: a Euclidean rhythm (or
   chance) picks steps to shuffle, stutter, reverse, chop or turn into
@@ -520,6 +522,20 @@ Plug in your interface and run `conduit_diag.sh` from the app folder (over
 SSH or a terminal). It writes `conduit_diag.txt`, which shows whether the
 driver exists and whether the device enumerated. It only reads; it changes
 nothing.
+
+Mono and stereo, on the **IO** tab:
+
+- **Channels** (under INPUT): *Stereo* takes the input as it comes; a mono
+  interface or the internal mic arrives on both sides, so it is already in
+  the middle. *Mono* sums the two sides into the middle. *Left* or *Right*
+  takes one side onto both: a guitar in input 1 of a stereo interface
+  records centred instead of on the left with silence on the right. It
+  applies to what's monitored, recorded and sent to the live effects.
+- **Output** (under OUTPUT): *Mono* sums the mix, the monitored input and
+  the effects into the middle of both sides, for one speaker or a mono PA.
+  Saved WAVs stay stereo.
+
+Both are kept between runs and can be mapped to MIDI.
 
 - Class-compliant interfaces work best: most small USB mics, Zoom and Tascam
   recorders in interface mode, and Behringer UCA/UMC.

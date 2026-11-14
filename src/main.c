@@ -66,6 +66,8 @@ static const char *const L_SCDIV[SC_SIZES] = { "1 bar", "1/2", "1/4 (a beat)", "
 static const char *const L_SCDIV_SHORT[SC_SIZES] = { "1 bar", "1/2", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32", "1/64" };
 static const char *const L_SCBARS[] = { "1 bar", "2 bars", "4 bars", "8 bars" };
 static const char *const L_PRINT[] = { "Dry (FX heard only)", "With the live FX" };
+static const char *const L_INCH[] = { "Stereo (as it comes)", "Mono (L+R summed)", "Left only", "Right only" };
+static const char *const L_OUTCH[] = { "Stereo", "Mono" };
 
 static const ParamDesc PD[P_COUNT] = {
     [P_LOOP_START] = { "Window start", 0, 1, 0.002f, 0.02f, K_LOOPPOS, 0 },
@@ -126,6 +128,8 @@ static const ParamDesc PD[P_COUNT] = {
     [P_AUTOPLAY]   = { "Loop after rec", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_SAVE_FMT]   = { "Save format", 0, 1, 1, 1, K_ENUM, L_FMT },
     [P_DUB_ALIGN]  = { "Dub align", -60, 120, 1, 10, K_MS, 0 },
+    [P_IN_CHAN]    = { "Input channels", 0, 3, 1, 1, K_ENUM, L_INCH },
+    [P_OUT_MONO]   = { "Output channels", 0, 1, 1, 1, K_ENUM, L_OUTCH },
     [P_IN_FX_SEND] = { "Live FX send", 0, 1, 0.05f, 0.25f, K_SEND, 0 },
     [P_IN_VERB_SEND] = { "Live reverb send", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_IN_PRINT]   = { "Record live input", 0, 1, 1, 1, K_ENUM, L_PRINT },
@@ -166,7 +170,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_VERB_DIFF] = "reverb_diffusion", [P_VERB_WIDTH] = "reverb_width", [P_VERB_LOWCUT] = "reverb_lowcut",
     [P_VERB_HICUT] = "reverb_highcut",
     [P_IN_GAIN] = "in_gain", [P_TRIGGER] = "trigger", [P_THRESH] = "threshold", [P_AUTOPLAY] = "autoplay",
-    [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms",
+    [P_SAVE_FMT] = "save_format", [P_DUB_ALIGN] = "dub_align_ms", [P_IN_CHAN] = "input_channels", [P_OUT_MONO] = "output_mono",
     [P_IN_FX_SEND] = "live_fx_send", [P_IN_VERB_SEND] = "live_reverb_send", [P_IN_PRINT] = "record_live_fx",
     [P_MSC_MODE] = "master_scatter", [P_MSC_DIV] = "master_scatter_slice_size", [P_MSC_AMOUNT] = "master_scatter_amount",
     [P_MSC_GATE] = "master_scatter_gate", [P_MSC_BARS] = "master_scatter_bars", [P_MSC_VAR] = "master_scatter_variation",
@@ -192,7 +196,7 @@ static int PAGE_ROWS[PG_N][40] = {
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
       ROW_END },
     { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
-    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
+    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_IN_CHAN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
     { ROW_END },
 };
@@ -224,8 +228,8 @@ static const int GRID[PG_N][48] = {
                 GCOL(GT_VERB2), GPAIR, P_VERB_DAMP, P_VERB_DIFF, GPAIR, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
     [PG_SYNC] = { GCOL(GT_CLOCK), P_CLOCK, GPAIR, P_BEATS, P_CLOCK_OFS, ROW_TEMPO,
                   GCOL(GT_MIDI), GPAIR, P_CLOCK_START, P_CLOCK_OUT, P_REC_WAIT, ROW_MIDI_DEV, ROW_END },
-    [PG_IO] = { GCOL(GT_INPUT), GPAIR, P_IN_GAIN, P_MONITOR, GPAIR, P_TRIGGER, P_THRESH, GPAIR, P_AUTOPLAY, P_DUB_ALIGN,
-                GCOL(GT_LIVE), GPAIR, P_IN_FX_SEND, P_IN_VERB_SEND, GPAIR, P_IN_PRINT, P_MASTER, P_SAVE_FMT,
+    [PG_IO] = { GCOL(GT_INPUT), GPAIR, P_IN_GAIN, P_MONITOR, P_IN_CHAN, GPAIR, P_TRIGGER, P_THRESH, GPAIR, P_AUTOPLAY, P_DUB_ALIGN,
+                GCOL(GT_LIVE), GPAIR, P_IN_FX_SEND, P_IN_VERB_SEND, GPAIR, P_IN_PRINT, P_MASTER, GPAIR, P_OUT_MONO, P_SAVE_FMT,
                 GCOL(GT_DEVS), ROW_IN_DEV, ROW_OUT_DEV, ROW_FOLDER, ROW_DIAG, ROW_END },
 };
 static int grid_on;
@@ -460,7 +464,7 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 
 /* ------------------------------------------------------------ config */
 
-static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
+static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_IN_CHAN, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
                                P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
                                P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
@@ -1854,7 +1858,7 @@ static void grid_name(int id, char *o, size_t sz)
         { P_PINGPONG, "Ping" }, { P_DLY_MIX, "Mix" }, { P_SC_AMOUNT, "Amt" }, { P_MSC_AMOUNT, "Amt" },
         { P_SC_EVOLVE, "Evolve" }, { P_IN_GAIN, "Gain" }, { P_MONITOR, "Monitor" }, { P_TRIGGER, "Trigger" }, { P_THRESH, "Thresh" },
         { P_AUTOPLAY, "Auto loop" }, { P_IN_FX_SEND, "FX" }, { P_IN_VERB_SEND, "Reverb" }, { P_IN_PRINT, "Record" },
-        { P_MASTER, "Master" }, { P_SAVE_FMT, "Save as" }, { P_BEATS, "Beats" }, { P_CLOCK_OFS, "Offset" },
+        { P_MASTER, "Master" }, { P_SAVE_FMT, "Save as" }, { P_IN_CHAN, "Channels" }, { P_OUT_MONO, "Output" }, { P_BEATS, "Beats" }, { P_CLOCK_OFS, "Offset" },
         { P_CLOCK_START, "Start/Stop" }, { P_CLOCK_OUT, "Clock out" }, { P_REC_WAIT, "Rec waits for bar" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
         { P_FX_SEND, "FX" }, { P_VERB_SEND, "Reverb" },
         { P_SC_MODE, "Mode" }, { P_MSC_MODE, "Mode" }, { P_SC_DIV, "Slice" }, { P_MSC_DIV, "Slice" },
@@ -1896,6 +1900,8 @@ static const char *const *grid_segs(int id, int *n)
     case P_TRIGGER: { static const char *const c[] = { "Instant", "Level" }; *n = 2; return c; }
     case P_IN_PRINT: { static const char *const c[] = { "Dry", "Wet" }; *n = 2; return c; }
     case P_SAVE_FMT: { static const char *const c[] = { "16-bit", "32 float" }; *n = 2; return c; }
+    case P_IN_CHAN: { static const char *const c[] = { "Stereo", "Mono", "Left", "Right" }; *n = 4; return c; }
+    case P_OUT_MONO: { static const char *const c[] = { "Stereo", "Mono" }; *n = 2; return c; }
     case P_DECAY_MODE: *n = 2; return dec;
     case P_SYNC: *n = 2; return len;
     case P_SC_TRIG: case P_MSC_TRIG: *n = 2; return trig;

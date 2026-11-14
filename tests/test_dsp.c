@@ -1563,8 +1563,42 @@ static void test_delay_controls(void)
     T(okw && okd && lw > 0 && ld > 0 && ld < lo0, msg);
 }
 
+/* Input channels: a source on the left side only is taken as it comes,
+ * summed, or from one side; Output Mono puts the same on both sides. */
+static void test_channels(void)
+{
+    static const char *const nm[] = { "Stereo", "Mono", "Left", "Right" };
+    /* expected left / right peaks for a 0.5 sine on the left input only */
+    static const float want[4][2] = { { 0.5f, 0 }, { 0.25f, 0.25f }, { 0.5f, 0.5f }, { 0, 0 } };
+    for (int mono = 0; mono < 2; mono++)
+        for (int ch = 0; ch < 4; ch++) {
+            Engine *e = calloc(1, sizeof *e);
+            eng_init(e, 1);
+            e->p[P_MONITOR] = 1; e->in_block = 512;
+            e->p[P_IN_CHAN] = (float)ch; e->p[P_OUT_MONO] = (float)mono;
+            float in[512 * 2], out[512 * 2], pk[2] = { 0, 0 };
+            double ph = 0;
+            for (int k = 0; k < 60; k++) {
+                for (int i = 0; i < 512; i++) { in[2 * i] = 0.5f * (float)sin(ph); in[2 * i + 1] = 0; ph += 2 * M_PI * 220 / CD_SR; }
+                eng_push_input(e, in, 512);
+                eng_render(e, out, 512);
+                if (k >= 20) for (int i = 0; i < 512; i++)
+                    for (int c = 0; c < 2; c++) if (fabsf(out[2 * i + c]) > pk[c]) pk[c] = fabsf(out[2 * i + c]);
+            }
+            float wl = want[ch][0], wr = want[ch][1];
+            if (mono) wl = wr = (wl + wr) * 0.5f;
+            char msg[140];
+            snprintf(msg, sizeof msg, "input %s, output %s: L %.3f R %.3f (want %.2f %.2f)",
+                     nm[ch], mono ? "Mono" : "Stereo", pk[0], pk[1], wl, wr);
+            /* the output's soft clip takes a little off the top */
+            T(fabsf(pk[0] - wl) < 0.04f && fabsf(pk[1] - wr) < 0.04f, msg);
+            eng_free(e); free(e);
+        }
+}
+
 int main(void)
 {
+    test_channels();
     test_rate_mismatch();
     test_xy_gain();
     test_live_fx();
