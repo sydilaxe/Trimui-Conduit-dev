@@ -51,7 +51,8 @@ void eng_default_params(float *p)
         p[P_MSC_FB] = 0.f; p[P_MSC_FREEZE] = 0.f;
     }
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
-    p[P_CLOCK_START] = START_FOLLOW; p[P_CLOCK_OUT] = 1.f;
+    p[P_CLOCK_START] = START_FOLLOW; p[P_CLOCK_OUT] = 0.f;   /* nothing goes out until asked */
+    p[P_START_OUT] = 1.f; p[P_IN_DIV] = CLKDIV_X1; p[P_OUT_DIV] = CLKDIV_X1;
 }
 
 void eng_reset_fx_params(float *p)
@@ -946,6 +947,13 @@ static void transport_lock(Transport *tr, double target)
     tr->running = 1;
 }
 
+double eng_clkdiv(float v)
+{
+    static const double r[CLKDIV_N] = { 0.25, 1.0 / 3, 0.5, 2.0 / 3, 1, 1.5, 2, 3, 4 };
+    int i = (int)(v + 0.5f);
+    return r[i < 0 ? 0 : i >= CLKDIV_N ? CLKDIV_N - 1 : i];
+}
+
 #define LINK_TRANSIT 0.0003 /* a bulk transfer through a hub and the follower's thread waking (s) */
 
 /* follow the MIDI clock, a leading Brick or the first loop: the transport's phase and rate */
@@ -993,7 +1001,8 @@ static void transport_follow(Engine *e, const float *p, double now)
         fit_newest = base + (sy - iv * sx) / n + iv * (n - 1);
         if (now - newest > 0.5 || iv <= 1e-4) iv = 0;   /* the clock stopped coming */
     }
-    tr->bpm = iv > 0 ? 60.0 / (iv * CD_PPQ) : 0;
+    double div = eng_clkdiv(p[P_IN_DIV]);   /* IN DIV: 1/2 runs the loops at half the clock's tempo */
+    tr->bpm = iv > 0 ? 60.0 / (iv * CD_PPQ) * div : 0;
     int linked = tr->lk_t > 0 && now - tr->lk_t < 0.5 && tr->lk_bpm >= 20;
     if (linked)
         tr->bpm = tr->lk_bpm;
@@ -1026,12 +1035,12 @@ static void transport_follow(Engine *e, const float *p, double now)
     }
     double tpb = (double)CD_PPQ * beats;
     if (iv <= 0 || !tr->ext_run || tr->ticks < 0) { tr->running = 0; tr->rate = 0; tr->locked = 0; return; }
-    tr->cyc = iv * CD_SR * tpb;
+    tr->cyc = iv * CD_SR * tpb / div;
     /* where the clock is when this block is heard */
     /* the newest tick as the line has it (the raw one until the line spans a few) */
     double tick_t = tr->hist_n >= 8 && tr->ext_run && fabs(fit_newest - tr->tick_t) < iv ? fit_newest : tr->tick_t;
     double dt = clampd((T - tick_t) / iv, -2.0, 2.0);
-    transport_lock(tr, (tr->ticks + dt) / tpb);
+    transport_lock(tr, (tr->ticks + dt) * div / tpb);
 }
 
 static void transport_update(Engine *e, const float *p)

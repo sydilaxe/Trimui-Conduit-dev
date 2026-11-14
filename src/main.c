@@ -60,6 +60,7 @@ static const char *const L_VERB[] = { "Bloom 1  exact MidiVerb II #45", "Bloom 2
                                       "Bloom 1  adjustable", "Bloom 2  adjustable (+85 ms)" };
 static const char *const L_CLOCK[] = { "Internal (first loop = 1 bar)", "MIDI clock (USB)", "Auto (follow a clock when one comes)" };
 static const char *const L_START[] = { "Follow", "Ignore (the clock only)" };
+static const char *const L_CLKDIV[] = { "1/4", "1/3", "1/2", "2/3", "x1", "3/2", "x2", "x3", "x4" };
 static const char *const L_SCAT[] = { "Off", "Shuffle", "Stutter", "Reverse", "Chop (only the picked steps sound)",
                                       "Scatter (all of them)", "Grain" };
 static const char *const L_SCTRIG[] = { "Random (Amount)", "Euclidean (Hits, Steps, Rotate)" };
@@ -154,6 +155,9 @@ static const ParamDesc PD[P_COUNT] = {
     [P_CLOCK_OFS]  = { "Clock offset", -100, 100, 1, 10, K_MS, 0 },
     [P_CLOCK_START] = { "MIDI Start/Stop", 0, 1, 1, 1, K_ENUM, L_START },
     [P_CLOCK_OUT]  = { "Send MIDI clock", 0, 1, 1, 1, K_ENUM, L_ONOFF },
+    [P_START_OUT]  = { "Send Start/Stop", 0, 1, 1, 1, K_ENUM, L_ONOFF },
+    [P_IN_DIV]     = { "Clock in ratio", 0, CLKDIV_N - 1, 1, 1, K_ENUM, L_CLKDIV },
+    [P_OUT_DIV]    = { "Clock out ratio", 0, CLKDIV_N - 1, 1, 1, K_ENUM, L_CLKDIV },
 };
 /* config / MIDI-map keys (loop_decay ... keep the names older versions saved) */
 static const char *const PKEY[P_COUNT] = {
@@ -180,7 +184,8 @@ static const char *const PKEY[P_COUNT] = {
     [P_MSC_ROT] = "master_scatter_rotate", [P_MSC_EVOLVE] = "master_scatter_evolve",
     [P_MSC_FB] = "master_scatter_feedback", [P_MSC_FREEZE] = "master_scatter_freeze", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
-    [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_out",
+    [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_send",
+    [P_START_OUT] = "midi_start_out", [P_IN_DIV] = "midi_in_div", [P_OUT_DIV] = "midi_out_div",
 };
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TEMPO = -5, ROW_MIDI_DEV = -6,
@@ -197,7 +202,7 @@ static int PAGE_ROWS[PG_N][40] = {
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
       ROW_END },
-    { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
+    { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_IN_DIV, P_CLOCK_OUT, P_START_OUT, P_OUT_DIV, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
     { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_IN_CHAN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
     { ROW_END },
@@ -209,10 +214,10 @@ static int PAGE_ROWS[PG_N][40] = {
 #define GPAIR (-150)   /* the next two share a row */
 enum { GT_WINDOW, GT_PITCH, GT_LEVEL, GT_SENDS, GT_TSC_PAT, GT_TSC_SHAPE, GT_MSC_PAT, GT_MSC_SHAPE,
        GT_TONE, GT_DLY, GT_DLY2, GT_VERB, GT_VERB2,
-       GT_CLOCK, GT_MIDI, GT_INPUT, GT_LIVE, GT_DEVS, GT_N };
+       GT_CLOCK, GT_MIDI, GT_MIDI_OUT, GT_INPUT, GT_LIVE, GT_DEVS, GT_N };
 static const char *const GRID_TITLE[GT_N] = { "LOOP", "PITCH  DECAY", "LEVEL", "SENDS", "TRACK %d PATTERN",
     "TRACK %d SHAPE", "MIX PATTERN", "MIX SHAPE", "DRIVE  CRUSH  FILTER", "DELAY", "DELAY COLOUR", "REVERB", "REVERB TONE",
-    "CLOCK", "MIDI", "INPUT  RECORDING", "LIVE FX  OUTPUT", "DEVICES" };
+    "BAR", "MIDI CLOCK IN", "MIDI CLOCK OUT", "INPUT  RECORDING", "LIVE FX  OUTPUT", "DEVICES" };
 static const int GRID[PG_N][48] = {
     [PG_TRACK] = { GCOL(GT_WINDOW), GPAIR, P_LOOP_START, P_LOOP_END, GPAIR, P_SYNC, P_REVERSE,
                    GCOL(GT_PITCH), GPAIR, P_PITCH, P_FINE, GPAIR, P_DECAY, P_DECAY_MODE,
@@ -228,8 +233,9 @@ static const int GRID[PG_N][48] = {
                 GCOL(GT_DLY2), GPAIR, P_DLY_TONE, P_DLY_LOWCUT, GPAIR, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
                 GCOL(GT_VERB), P_VERB_TYPE, GPAIR, P_VERB_LEVEL, P_VERB_TIME, GPAIR, P_VERB_PRE, P_VERB_SIZE,
                 GCOL(GT_VERB2), GPAIR, P_VERB_DAMP, P_VERB_DIFF, GPAIR, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT, ROW_END },
-    [PG_SYNC] = { GCOL(GT_CLOCK), P_CLOCK, GPAIR, P_BEATS, P_CLOCK_OFS, ROW_TEMPO,
-                  GCOL(GT_MIDI), GPAIR, P_CLOCK_START, P_CLOCK_OUT, P_REC_WAIT, ROW_MIDI_DEV, ROW_END },
+    [PG_SYNC] = { GCOL(GT_CLOCK), GPAIR, P_BEATS, P_REC_WAIT, P_CLOCK_OFS, ROW_TEMPO,
+                  GCOL(GT_MIDI), P_CLOCK, GPAIR, P_CLOCK_START, P_IN_DIV, ROW_MIDI_DEV,
+                  GCOL(GT_MIDI_OUT), GPAIR, P_CLOCK_OUT, P_START_OUT, P_OUT_DIV, ROW_END },
     [PG_IO] = { GCOL(GT_INPUT), GPAIR, P_IN_GAIN, P_MONITOR, P_IN_CHAN, GPAIR, P_TRIGGER, P_THRESH, GPAIR, P_AUTOPLAY, P_DUB_ALIGN,
                 GCOL(GT_LIVE), GPAIR, P_IN_FX_SEND, P_IN_VERB_SEND, GPAIR, P_IN_PRINT, P_MASTER, GPAIR, P_OUT_MONO, P_SAVE_FMT,
                 GCOL(GT_DEVS), ROW_IN_DEV, ROW_OUT_DEV, ROW_FOLDER, ROW_DIAG, ROW_END },
@@ -468,7 +474,7 @@ static void bind_str(const Bind *b, char *o, size_t sz)
 
 static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_IN_CHAN, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT,
                                P_DUB_ALIGN, P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
-                               P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
+                               P_START_OUT, P_IN_DIV, P_OUT_DIV, P_VERB_TYPE, P_VERB_TIME, P_VERB_LEVEL, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP,
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
                                P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
                                P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
@@ -1444,7 +1450,33 @@ static void well(int x, int y, int w, int h, Uint32 c)
 }
 
 /* the lamps: a jewel lens with Fresnel rings, dull copper when off; lit, it glows in its colour */
-static SDL_Texture *tex_glow, *tex_disc, *tex_lens;
+static SDL_Texture *tex_glow, *tex_disc, *tex_lens, *tex_knob;
+/* a black knob, knurled round its edge, glossy on top */
+static void make_knob(void)
+{
+    enum { N = 96 };
+    Uint32 *px = malloc(N * N * 4);
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++) {
+            float dx = (x + 0.5f - N / 2.f) / (N / 2.f), dy = (y + 0.5f - N / 2.f) / (N / 2.f), d = sqrtf(dx * dx + dy * dy);
+            float aa = d > 1 ? 0 : d > 0.97f ? (1 - d) / 0.03f : 1;
+            int v;
+            if (d > 0.8f) {
+                /* the knurl: ridges, lit a little from above */
+                float ang = atan2f(dy, dx), ridge = 0.5f + 0.5f * cosf(ang * 40.f);
+                v = (int)(0x1c + 0x18 * ridge - 14.f * dy);
+            } else {
+                float hl = expf(-((dx + 0.25f) * (dx + 0.25f) * 2.f + (dy + 0.38f) * (dy + 0.38f) * 9.f) * 4.f);
+                v = (int)(0x17 + 10.f * (0.8f - d) + 120.f * hl);
+                if (d > 0.76f) v = 0x0c;                       /* the step down to the knurl */
+            }
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            px[y * N + x] = (Uint32)(aa * 255) << 24 | (Uint32)(v << 16 | v << 8 | (v + 2 > 255 ? 255 : v + 2));
+        }
+    tex_knob = SDL_CreateTexture(G.ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, N, N);
+    if (tex_knob) { SDL_UpdateTexture(tex_knob, NULL, px, N * 4); SDL_SetTextureBlendMode(tex_knob, SDL_BLENDMODE_BLEND); }
+    free(px);
+}
 static void make_lamps(void)
 {
     enum { N = 64 };
@@ -2056,7 +2088,8 @@ static void grid_name(int id, char *o, size_t sz)
         { P_SC_EVOLVE, "Evolve" }, { P_IN_GAIN, "Gain" }, { P_MONITOR, "Monitor" }, { P_TRIGGER, "Trigger" }, { P_THRESH, "Thresh" },
         { P_AUTOPLAY, "Auto loop" }, { P_IN_FX_SEND, "FX" }, { P_IN_VERB_SEND, "Reverb" }, { P_IN_PRINT, "Record" },
         { P_MASTER, "Master" }, { P_SAVE_FMT, "Save as" }, { P_IN_CHAN, "Channels" }, { P_OUT_MONO, "Output" }, { P_BEATS, "Beats" }, { P_CLOCK_OFS, "Offset" },
-        { P_CLOCK_START, "Start/Stop" }, { P_CLOCK_OUT, "Clock out" }, { P_REC_WAIT, "Rec waits for bar" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
+        { P_CLOCK_START, "Start in" }, { P_CLOCK_OUT, "Clock out" }, { P_START_OUT, "Start out" },
+        { P_IN_DIV, "Ratio" }, { P_OUT_DIV, "Ratio" }, { P_REC_WAIT, "Rec waits" }, { P_SC_ROT, "Rotate" }, { P_SYNC, "Length" },
         { P_FX_SEND, "FX" }, { P_VERB_SEND, "Reverb" },
         { P_SC_MODE, "Mode" }, { P_MSC_MODE, "Mode" }, { P_SC_DIV, "Slice" }, { P_MSC_DIV, "Slice" },
         { P_SC_TRIG, "Picks" }, { P_MSC_TRIG, "Picks" }, { P_SC_BARS, "Length" }, { P_MSC_BARS, "Length" },
@@ -2081,6 +2114,8 @@ static int grid_off(int id)
     if (sid == P_SC_HITS || sid == P_SC_STEPS || sid == P_SC_ROT) return tp[P_SC_TRIG] < 0.5f;
     if (sid >= 0 && sid != P_SC_MODE) return tp[P_SC_MODE] < 0.5f;
     if (id == P_MSC_FB || id == P_MSC_FREEZE) return G.eng.p[P_MSC_MODE] < 0.5f;
+    if (id == P_CLOCK_START || id == P_IN_DIV) return G.eng.p[P_CLOCK] < 0.5f;     /* no clock followed */
+    if (id == P_START_OUT || id == P_OUT_DIV) return G.eng.p[P_CLOCK_OUT] < 0.5f;  /* none sent */
     return 0;
 }
 
@@ -2146,8 +2181,57 @@ static void tape(int xr, int y, Uint32 c, float ts, const char *v, int room)
     text(xr - tw - 4, yy, c, sc, v);
 }
 
-/* a control on the plate: its name stamped, its value on tape, and a slot, a row of
- * choices or a lamp to work it; the selected one ringed in orange */
+/* the same, left-aligned at x */
+static void tape_l(int x, int y, Uint32 c, float ts, const char *v, int room)
+{
+    float sc = ts;
+    if ((int)(strlen(v) * FONT_CW * sc) + 8 > room) sc = 0.55f;
+    int tw = (int)(strlen(v) * FONT_CW * sc);
+    if (tw + 8 > room) return;
+    tape(x + tw + 8, y, c, sc, v, room);
+}
+
+/* a knob: pointer nub and white line at v (0..1, from 7:30 round to 4:30); punched dots at
+ * its ends (and the middle, when it goes either way), or at each of n positions */
+#define KNOB_A0 (0.75f * 3.14159265f)
+#define KNOB_SPAN (1.5f * 3.14159265f)
+static void knob(int cx, int cy, int r, float v, int bip, int n, int off)
+{
+    float a = KNOB_A0 + KNOB_SPAN * v, ca = cosf(a), sa = sinf(a);
+    int nd = n > 1 ? n : bip ? 3 : 2;
+    for (int i = 0; i < nd; i++) {
+        float t = nd > 1 ? (float)i / (nd - 1) : 0, b = KNOB_A0 + KNOB_SPAN * t;
+        int dx = cx + (int)lroundf((r + 6) * cosf(b)), dy = cy + (int)lroundf((r + 6) * sinf(b));
+        disc(dx, dy + 1, 2.0f, tex_disc, INK_LIGHT, 200);
+        disc(dx, dy, 1.8f, tex_disc, INK, 255);
+    }
+    disc(cx + 2, cy + 3, r + 1.5f, tex_disc, 0x55575b, 150);                 /* its shadow on the metal */
+    disc(cx + (int)(ca * r * 0.92f), cy + (int)(sa * r * 0.92f), r * 0.34f, tex_disc, 0x1d1e21, 255);  /* the nub */
+    if (tex_knob) { SDL_Rect d = { cx - r, cy - r, 2 * r, 2 * r }; SDL_SetTextureAlphaMod(tex_knob, 255); SDL_RenderCopy(G.ren, tex_knob, NULL, &d); }
+    Uint32 lc = off ? 0x7d8085 : 0xf4f4f2;
+    for (int i = 0; i <= 8; i++) {
+        float f = 0.28f + 0.72f * i / 8;
+        disc(cx + (int)lroundf(ca * r * f), cy + (int)lroundf(sa * r * f), r * 0.075f + 0.6f, tex_disc, lc, 255);
+    }
+}
+
+/* a mini toggle on its nut: lever up (-1), down (1) or in the middle (0) */
+static void toggle(int cx, int cy, int dir)
+{
+    disc(cx + 1, cy + 2, 10, tex_disc, 0x55575b, 140);
+    disc(cx, cy, 9.5f, tex_disc, 0x5e6166, 255);
+    disc(cx, cy, 8, tex_disc, 0xd3d5d7, 255);
+    disc(cx, cy, 4, tex_disc, 0x2a2b2e, 255);
+    if (!dir) { disc(cx, cy, 4.6f, tex_disc, 0x4a4c50, 255); disc(cx, cy, 3.8f, tex_disc, 0xf2f2f0, 255); disc(cx - 1, cy - 1, 1.4f, tex_disc, 0xffffff, 255); return; }
+    for (int i = 0; i <= 12; i++) disc(cx, cy + dir * i, 2.9f - i * 0.05f, tex_disc, 0x4a4c50, 255);
+    for (int i = 0; i <= 12; i++) disc(cx, cy + dir * i, 2.2f - i * 0.05f, tex_disc, 0xe2e3e4, 255);
+    disc(cx, cy + dir * 14, 4.0f, tex_disc, 0x4a4c50, 255);
+    disc(cx, cy + dir * 14, 3.3f, tex_disc, 0xf4f4f2, 255);
+    disc(cx - 1, cy + dir * 14 - 1, 1.2f, tex_disc, 0xffffff, 255);
+}
+
+/* a control on the plate: its name stamped, a knob or a toggle to work it, and what it's
+ * set to on tape; the selected one ringed in orange */
 static void grid_cell(int x, int y, int w, int h, int id, int on)
 {
     if (on) {
@@ -2172,54 +2256,42 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     int off = grid_off(id);
     char nm[48], v[64]; grid_name(id, nm, sizeof nm);
     Uint32 ink = off ? INK_OFF : INK, vc = off ? C_DIM : on ? C_ACCENT : C_TEXT;
-    Uint32 lit = off ? 0x3a3c40 : on ? C_ACCENT : C_WAVE;
-    int narrow = w < 160, pad = narrow ? 8 : 10;
-    float ts = narrow ? 0.64f : 0.7f;
-    int lx = x + pad, cw = w - 2 * pad, ly = y + 4, by = y + h - 11;
+    int narrow = w < 160, pad = narrow ? 7 : 10;
+    float ts = narrow ? 0.62f : 0.7f;
+    int lx = x + pad, ly = y + 4, vy = y + h - 19;
     float val = *pp(id);
-    int nseg; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
-    int nw = stamp_ink(lx, ly, ink, ts, 1, nm);
-    if (d->kind == K_ENUM && d->labels == L_ONOFF) {
-        /* a switch: a lamp, lit when it's on */
-        int onv = val > 0.5f;
-        lamp(x + w - pad - 9, y + h / 2, 7, on ? C_ACCENT : C_PLAY, onv && !off);
-        stamp_ink(lx, ly + 20, ink, 0.6f, 1, onv ? "ON" : "OFF");
-    } else if (seg) {
-        /* a few choices side by side, the one set lit */
-        int sy = y + h - 22, sh = 18, gw = cw / nseg;
-        well(lx, sy, gw * nseg - 3, sh, C_BG);
-        for (int i = 0; i < nseg; i++) {
-            int sel = (int)(val + 0.5f) == i, sx = lx + i * gw;
-            if (sel) { fill(sx, sy, gw - 3, sh, lit, 255); if (!off) disc(sx + gw / 2, sy + sh / 2, gw * 0.6f, tex_glow, lit, 50); }
-            else if (i) fill(sx - 2, sy + 3, 1, sh - 6, 0x2c2f35, 255);
-            int tw = (int)(strlen(seg[i]) * FONT_CW * 0.58f);
-            text(sx + (gw - 3 - tw) / 2, sy + 2, sel ? C_BG : (off ? 0x4a4d52 : C_DIM), 0.58f, seg[i]);
+    int nseg = 0; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
+    stamp_ink(lx, ly, ink, ts, 1, nm);
+    int onoff = d->kind == K_ENUM && d->labels == L_ONOFF;
+    if (onoff || (seg && nseg <= 3)) {
+        /* a toggle: up for on (or the first choice), down for off (or the last), the middle
+         * for the one between; its positions stamped beside it */
+        int n = onoff ? 2 : nseg, idx = onoff ? (val > 0.5f ? 0 : 1) : (int)(val + 0.5f);
+        int cx = x + w - pad - 24, cy = y + h / 2 + 1;
+        toggle(cx, cy, n == 3 && idx == 1 ? 0 : idx == 0 ? -1 : 1);
+        for (int i = 0; i < n; i++) {
+            char m[4];
+            if (onoff) snprintf(m, sizeof m, "%s", i ? "0" : "1");
+            else snprintf(m, sizeof m, "%.*s", isdigit((unsigned char)seg[i][0]) ? 2 : 1, seg[i]);
+            int my = n == 3 ? (i == 0 ? y + 2 : i == 1 ? cy - 7 : y + h - 15) : (i == 0 ? y + 2 : y + h - 15);
+            stamp_ink(cx + 13, my, ink, 0.55f, 0, m);
         }
-    } else if (d->kind == K_ENUM) {
-        /* more choices: the one set, and where it is among them */
-        grid_value(id, v, sizeof v);
-        tape(x + w - pad, ly, vc, ts, v, cw - nw - 6);
-        int nn = (int)(d->max - d->min) + 1, gw = cw / nn;
-        well(lx, by + 2, cw - 2, 6, C_BG);
-        for (int i = 0; i < nn; i++)
-            if ((int)(val + 0.5f) == i) fill(lx + i * gw, by + 2, gw - 2, 6, lit, 255);
-    } else {
-        /* a slider: a slot, lit from the end (or the middle, when it goes either way), and a
-         * black cap with a white line */
-        grid_value(id, v, sizeof v);
-        tape(x + w - pad, ly, vc, ts, v, cw - nw - 6);
-        float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
-        well(lx, by, cw, 5, C_BG);
-        int p = lx + (int)(cw * t);
-        if (d->min < 0 && d->max > 0) {
-            int z = lx + (int)(cw * (-d->min / (d->max - d->min)));
-            fill(p < z ? p : z, by, abs(p - z), 5, lit, 255);
-            fill(z, by - 4, 1, 13, INK, 200);
-        } else fill(lx, by, p - lx, 5, lit, 255);
-        fill(p - 4, by - 6, 9, 17, 0x111214, 255);
-        fill(p - 4, by + 11, 9, 1, INK_LIGHT, 150);
-        fill(p, by - 5, 1, 15, off ? C_DIM : on ? C_ACCENT : 0xf4f4f2, 255);
+        if (onoff) {
+            /* and its lamp */
+            lamp(lx + 6, vy + 7, 5, on ? C_ACCENT : C_PLAY, val > 0.5f && !off);
+            stamp_ink(lx + 16, vy + 1, ink, 0.55f, 1, val > 0.5f ? "ON" : "OFF");
+        } else tape_l(lx, vy, vc, ts, seg[idx < 0 ? 0 : idx >= nseg ? nseg - 1 : idx], cx - 14 - lx);
+        return;
     }
+    /* a knob: a selector for a list of choices, else a pot (from the middle when it goes either way) */
+    int kr = (h - 14) / 2; if (kr > 17) kr = 17; if (kr < 9) kr = 9;
+    int cx = x + w - pad - kr - 4, cy = y + h / 2 + 1, n = 0;
+    float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (d->kind == K_ENUM) { n = (int)(d->max - d->min) + 1; if (n > 12) n = 0; t = n > 1 ? (float)(int)(val - d->min + 0.5f) / (n - 1) : 0; }
+    knob(cx, cy, kr, t, d->min < 0 && d->max > 0, n, off);
+    if (seg) snprintf(v, sizeof v, "%s", seg[(int)(val + 0.5f) < nseg ? (int)(val + 0.5f) : 0]);
+    else grid_value(id, v, sizeof v);
+    tape_l(lx, vy, vc, ts, v, cx - kr - 8 - lx);
 }
 
 /* a one-screen page's columns, and the most rows in one */
@@ -2823,6 +2895,7 @@ int main(int argc, char **argv)
       if (wake && *wake) { char cmd[600]; snprintf(cmd, sizeof cmd, "'%s' >/dev/null 2>&1 &", wake); if (system(cmd)) {} } }
     make_font();
     make_lamps();
+    make_knob();
     make_bg();
     open_pads();
 

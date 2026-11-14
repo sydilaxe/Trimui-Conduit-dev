@@ -41,4 +41,5 @@ int midi_link_pos(uint8_t *out, int max, double pos16, double bpm, int playing);
 /* the clock out, stepped: the bytes to send for the sound heard at pos16
  * (16ths since the transport started) while run */
 typedef struct { int running, pending; long sent, cont_at; } MidiClockOut;
-int midi_clock_out(MidiClockOut *co, double pos16, int run, uint8_t *out, int max);
+/* transport: Start / Stop / Continue and song position with the ticks, or the ticks alone */
+int midi_clock_out(MidiClockOut *co, double pos16, int run, int transport, uint8_t *out, int max);

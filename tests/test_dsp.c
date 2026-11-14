@@ -648,6 +648,12 @@ static void test_midi_clock(void)
     clocked(e, 3, NULL);
     snprintf(msg, sizeof msg, "Start again: running from bar 1 (phase %.4f)", e->tr.phase);
     T(e->tr.running && e->tr.phase >= 0 && e->tr.phase < 0.02, msg);
+
+    /* IN DIV 1/2: the loops at half the clock's tempo (125 -> 62.5), a bar twice as long */
+    e->p[P_IN_DIV] = 2;
+    clocked(e, 300, NULL);
+    snprintf(msg, sizeof msg, "IN DIV 1/2: tempo %.2f (62.5), bar %.0f frames (184320)", e->tr.bpm, e->tr.cyc);
+    T(e->tr.running && fabs(e->tr.bpm - 62.5) < 0.2 && fabs(e->tr.cyc - 184320) < 600, msg);
     tick_iv = 0;
     eng_free(e); free(e);
 }
@@ -745,25 +751,35 @@ static void test_link_sync(void)
         int ticks = 0, starts = 0, first_start = -1, k0 = 0;
         for (int ms = 0; ms <= 4000; ms++) {
             double pos = ms * 0.001 * 120 / 15.0;
-            int n = midi_clock_out(&co, pos, 1, out, sizeof out);
+            int n = midi_clock_out(&co, pos, 1, 1, out, sizeof out);
             for (int i = 0; i < n; i++) {
                 if (out[i] == 0xFA) { starts++; if (first_start < 0) first_start = k0; }
                 ticks += out[i] == 0xF8;
                 k0++;
             }
         }
-        int n = midi_clock_out(&co, 32.0, 0, out, sizeof out);
+        int n = midi_clock_out(&co, 32.0, 0, 1, out, sizeof out);
         int stops = n == 1 && out[0] == 0xFC;
         snprintf(msg, sizeof msg, "clock out: Start first, %d ticks in 4 s at 120 BPM (want 192), Stop", ticks);
         T(starts == 1 && first_start == 0 && ticks == 192 && stops, msg);
         memset(&co, 0, sizeof co);
-        n = midi_clock_out(&co, 5.3, 1, out, sizeof out);
+        n = midi_clock_out(&co, 5.3, 1, 1, out, sizeof out);
         int spp = n == 3 && out[0] == 0xF2 && out[1] == 6 && out[2] == 0;
-        int early = midi_clock_out(&co, 5.9, 1, out, sizeof out) == 0;
-        n = midi_clock_out(&co, 6.01, 1, out, sizeof out);
+        int early = midi_clock_out(&co, 5.9, 1, 1, out, sizeof out) == 0;
+        n = midi_clock_out(&co, 6.01, 1, 1, out, sizeof out);
         int cont = n >= 1 && out[0] == 0xFB;
-        n = midi_clock_out(&co, 6.2, 1, out, sizeof out);
+        n = midi_clock_out(&co, 6.2, 1, 1, out, sizeof out);
         T(spp && early && cont && n == 1 && out[0] == 0xF8, "clock out: started mid-bar, song position 6, Continue on the 16th, then ticks");
+        /* START OUT off: the ticks alone, mid-bar too, and nothing when it stops */
+        memset(&co, 0, sizeof co);
+        int other = 0; ticks = 0;
+        for (int ms = 0; ms <= 1000; ms++) {
+            n = midi_clock_out(&co, 5.3 + ms * 0.001 * 120 / 15.0, 1, 0, out, sizeof out);
+            for (int i = 0; i < n; i++) { ticks += out[i] == 0xF8; other += out[i] != 0xF8; }
+        }
+        n = midi_clock_out(&co, 40.0, 0, 0, out, sizeof out);
+        snprintf(msg, sizeof msg, "clock out without Start/Stop: %d ticks in 1 s (want 48), no Start, Continue, song position or Stop", ticks);
+        T(ticks >= 47 && ticks <= 48 && !other && n == 0, msg);
     }
 
     /* the position message through the parser; a CC after it still parsed */

@@ -128,7 +128,7 @@ either turns the X/Y mix on) and *X/Y mix on/off* to a pad.
 **TRACK → Length** is *Synced* (the default) or *Free*. With **SYNC → Sync
 to: Internal**, the first synced loop you record is one bar, and every later
 synced take is a whole number of bars (or ½ or ¼ of one): press A and it
-starts on the next bar line (**SYNC → Rec waits for bar**; Off starts at
+starts on the next bar line (**SYNC → Rec waits**; Off starts at
 once), press A again and it carries on to the end of the bar it's in. Pressed
 just after a bar line (up to 1/16 bar late), it ends on the bar just gone.
 Erase every synced track and the next one sets a new bar.
@@ -143,18 +143,34 @@ straight line through the last four beats of ticks, so USB's timing jitter
 averages out: the loops hold within about a quarter of a millisecond of the
 clock.
 
-**Sync to: Auto** follows a MIDI clock (or a leading Brick on the USB link)
-while one comes in, and otherwise the first loop sets the bar as with
-*Internal*. **SYNC → MIDI Start/Stop: Ignore** follows the clock's tempo but
-not its Start, Stop and Continue: you start and stop the loops yourself
-(from a leading Brick they still line up with its bar).
+The SYNC tab's **MIDI CLOCK IN** and **MIDI CLOCK OUT** columns set every part
+of the MIDI clock, in and out, as on Jaffedrone:
 
-While Conduit leads (*Internal*, or *Auto* with nothing coming in) and **SYNC →
-Send MIDI clock** is On (the default), it sends MIDI clock to every MIDI port,
-24 ticks a beat at the first loop's tempo (a bar of *Beats per bar* beats),
-timed to the sound as it comes out of your audio interface: Start when the
-loops start on the bar (song position and Continue when later), Stop when
-they stop.
+- **Sync to** (the clock in): *Internal* ignores a clock that comes in; *MIDI*
+  follows one; *Auto* follows a MIDI clock (or a leading Brick on the USB link)
+  while one comes in, and otherwise the first loop sets the bar as with
+  *Internal*.
+- **Start in**: *Follow* starts, stops and places the loops with the clock's
+  Start, Stop, Continue and song position; *Ignore* keeps the clock's tempo
+  only, so you start and stop the loops yourself (from a leading Brick they
+  still line up with its bar).
+- **Ratio** (in): runs the loops at a ratio of the clock that comes in (1/4,
+  1/3, 1/2, 2/3, x1, 3/2, x2, x3, x4: at 1/2 a drum machine at 120 runs them at
+  60, half time). The USB link keeps the leader's own tempo whatever it says.
+- **Clock out**: Off (the default) sends nothing, whatever the loops do. On,
+  while Conduit leads (*Internal*, or *Auto* with nothing coming in), it sends
+  MIDI clock to every MIDI port, 24 ticks a beat at the first loop's tempo (a
+  bar of *Beats per bar* beats), timed to the sound as it comes out of your
+  audio interface.
+- **Start out**: On sends Start when the loops start on the bar (song position
+  and Continue when later) and Stop when they stop; Off sends the clock alone,
+  for gear you start by hand.
+- **Ratio** (out): sends the clock at a ratio of the loops' tempo (x2: the gear
+  runs double time); x1 is the tempo itself.
+
+Start in, the ratios and Start out are greyed out while they do nothing (Sync to
+Internal, Clock out Off). Bricks following on the USB link get the leader's
+clock whatever Clock out says.
 
 ### Linking Bricks over USB
 
@@ -195,16 +211,24 @@ click; on a synced track the window keeps its place in the bar.
 
 ### Effects
 
-Every tab fits on one screen: the four track lanes on top, the tabs, and the
-tab's settings below in titled columns, as sliders, switches and side-by-side
-choices (two short settings often share a row). ↑↓ walk down a column and on
+Every tab fits on one screen, laid out like a row of raw-aluminium pedals: the
+four track lanes on a plate at the top, then the tabs and the tab's settings on
+a second plate below, in titled columns with stamped names (two short settings
+often share a row). A setting is a black knob (its value on tape beside it), a
+selector knob for a list of choices (Filter, Channels, Slice), or a mini toggle
+for on / off and two- or three-way choices (1 / 0, Sync / Free). The light shows
+what's going on: each track's lamp, in a ring of LEDs going round with its loop,
+is green while it plays, red while it records and yellow while it overdubs (dull
+when it's stopped), a playing track's waveform is lit and a stopped one's grey,
+and a lamp marks the tab you're on and each switch that's on. Orange frames what
+is selected. Knobs and toggles move when MIDI changes their settings. ↑↓ walk down a column and on
 into the next, ←→ change the selected one. A setting that does nothing as
 things are set (Amount when the steps are Euclidean, the delay's Time when
 it's synced) is greyed out. Names and values are short in the cells (*Fdbk*,
 *1/8T*, *L60*); the footer shows the selected setting in full. The IN / OUT
-meters are the thin bars at the top right, and the lanes take whatever room
-the settings leave, so they are biggest on TRACK. MIDI and FILES are lists
-that scroll. (`CONDUIT_GRID=0` brings back the old one-row-per-setting
+meters are the LED ladders at the top right. The lanes are the same size on
+every tab, so moving between tabs never moves the waveforms. MIDI and FILES are
+lists that scroll. (`CONDUIT_GRID=0` brings back the old one-row-per-setting
 lists.)
 
 The **EFFECTS** tab holds everything after the tracks, in five columns:
@@ -296,7 +320,7 @@ Scatter can also work on the **whole mix**, like a DJ mixer's: all four
 tracks with their FX and reverb, but not the live input. Its settings are the
 **MIX PATTERN** and **MIX SHAPE** columns on the SEQ tab. They are the same as a
 track's, and it can run on top of the tracks' own scatter. While the SEQ tab
-is open, a **MIX** strip under the four lanes
+is open, a **MIX** strip under the tabs
 shows its steps in the bar. With one of the master settings selected, SELECT + L1
 switches it on and off and SELECT + R1 steps to the next variation. MIDI has
 *Master scatter on/off* and *Master scatter: next variation*.
