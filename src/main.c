@@ -1612,17 +1612,20 @@ static void draw_seq_lane(int k, int y)
             int bar_line = ((long)floor(sb + 0.5)) % beats == 0;
             fill(x, y + 4, 2, 8, bar_line ? C_TEXT : C_DIM, 200);
         }
+        /* the step first: a hit filled and topped in the accent, the others a thin
+         * line; the audio only faintly under it */
         Uint32 c = hit ? C_ACCENT : C_WAVE;
-        int a = mode == SC_OFF ? 0 : mute ? 0 : hit ? 40 : 14;
+        int a = mode == SC_OFF ? 0 : mute ? 0 : hit ? 70 : 16;
         fill(x + 2, cy, cw - 4, ch, C_BG, 255);
         if (a) fill(x + 2, cy, cw - 4, ch, c, (Uint8)a);
+        if (mode != SC_OFF && !mute) fill(x + 2, cy, cw - 4, hit ? 4 : 2, c, hit ? 255 : 110);
         if (L > 1 && !mute) {
             /* the audio it plays there: its own, or the slice the pattern puts
              * there (repeated, reversed, cut short by the gate) */
             int ww = cw - 4, mid = cy + ch / 2;
             double piece = SL / (rep > 0 ? rep : 1);
             float gate = mode == SC_OFF ? 1.f : t->p[P_SC_GATE];
-            col(mode == SC_OFF || !hit ? C_WAVE : C_ACCENT, mode == SC_OFF ? 200 : hit ? 255 : 150);
+            col(mode == SC_OFF || !hit ? C_WAVE : C_TEXT, mode == SC_OFF ? 90 : hit ? 70 : 55);
             for (int px = 0; px < ww; px++) {
                 double f = (px + 0.5) * SL / ww, f2 = mode == SC_OFF ? f : fmod(f, piece);
                 if (mode != SC_OFF && gate < 0.999f && f2 / piece >= gate) continue;
