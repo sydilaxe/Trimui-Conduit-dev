@@ -2230,6 +2230,20 @@ static void toggle(int cx, int cy, int dir)
     disc(cx - 1, cy + dir * 14 - 1, 1.2f, tex_disc, 0xffffff, 255);
 }
 
+/* 2: a column's main knob, big; 0: a trim, small; else 1 */
+static int knob_size(int id)
+{
+    switch (id) {
+    case P_VOLUME: case P_PITCH: case P_DRIVE: case P_CUTOFF: case P_DLY_MIX: case P_VERB_LEVEL:
+    case P_IN_GAIN: case P_MASTER: case P_SC_AMOUNT: case P_MSC_AMOUNT: case P_FX_SEND: case P_BEATS:
+        return 2;
+    case P_FINE: case P_CLOCK_OFS: case P_DUB_ALIGN: case P_SC_ROT: case P_MSC_ROT: case P_DLY_WOW_RATE:
+    case P_THRESH: case P_IN_DIV: case P_OUT_DIV: case P_SC_VAR: case P_MSC_VAR: case P_DOWNS: case P_RESO:
+        return 0;
+    }
+    return 1;
+}
+
 /* a control on the plate: its name stamped, a knob or a toggle to work it, and what it's
  * set to on tape; the selected one ringed in orange */
 static void grid_cell(int x, int y, int w, int h, int id, int on)
@@ -2261,37 +2275,57 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     int lx = x + pad, ly = y + 4, vy = y + h - 19;
     float val = *pp(id);
     int nseg = 0; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
-    stamp_ink(lx, ly, ink, ts, 1, nm);
+    int tall = h >= 76;   /* room for a knob or a toggle with its name stamped under it, as on the pedals */
+    if (tall) { int lw = stamp_w(nm, ts, 1); stamp_ink(x + (w - lw) / 2, y + h - 20, ink, ts, 1, nm); vy = y + 3; }
+    else stamp_ink(lx, ly, ink, ts, 1, nm);
     int onoff = d->kind == K_ENUM && d->labels == L_ONOFF;
     if (onoff || (seg && nseg <= 3)) {
         /* a toggle: up for on (or the first choice), down for off (or the last), the middle
          * for the one between; its positions stamped beside it */
         int n = onoff ? 2 : nseg, idx = onoff ? (val > 0.5f ? 0 : 1) : (int)(val + 0.5f);
-        int cx = x + w - pad - 24, cy = y + h / 2 + 1;
+        int cx = tall ? x + w / 2 : x + w - pad - 24, cy = tall ? y + 20 + (h - 42) / 2 : y + h / 2 + 1;
+
         toggle(cx, cy, n == 3 && idx == 1 ? 0 : idx == 0 ? -1 : 1);
         for (int i = 0; i < n; i++) {
             char m[4];
             if (onoff) snprintf(m, sizeof m, "%s", i ? "0" : "1");
             else snprintf(m, sizeof m, "%.*s", isdigit((unsigned char)seg[i][0]) ? 2 : 1, seg[i]);
-            int my = n == 3 ? (i == 0 ? y + 2 : i == 1 ? cy - 7 : y + h - 15) : (i == 0 ? y + 2 : y + h - 15);
+            int top = tall ? cy - 22 : y + 2, bot = tall ? cy + 10 : y + h - 15;
+            int my = n == 3 ? (i == 0 ? top : i == 1 ? cy - 7 : bot) : (i == 0 ? top : bot);
             stamp_ink(cx + 13, my, ink, 0.55f, 0, m);
         }
+        const char *sv = onoff ? (val > 0.5f ? "ON" : "OFF") : seg[idx < 0 ? 0 : idx >= nseg ? nseg - 1 : idx];
+        int lxx = tall ? x + (w - (onoff ? 16 + stamp_w(sv, 0.55f, 1) : (int)(strlen(sv) * FONT_CW * ts) + 8)) / 2 : lx;
         if (onoff) {
             /* and its lamp */
-            lamp(lx + 6, vy + 7, 5, on ? C_ACCENT : C_PLAY, val > 0.5f && !off);
-            stamp_ink(lx + 16, vy + 1, ink, 0.55f, 1, val > 0.5f ? "ON" : "OFF");
-        } else tape_l(lx, vy, vc, ts, seg[idx < 0 ? 0 : idx >= nseg ? nseg - 1 : idx], cx - 14 - lx);
+            lamp(lxx + 6, vy + 7, 5, on ? C_ACCENT : C_PLAY, val > 0.5f && !off);
+            stamp_ink(lxx + 16, vy + 1, ink, 0.55f, 1, sv);
+        } else tape_l(lxx, vy, vc, ts, sv, tall ? w - 2 * pad : cx - 14 - lx);
         return;
     }
     /* a knob: a selector for a list of choices, else a pot (from the middle when it goes either way) */
-    int kr = (h - 14) / 2; if (kr > 17) kr = 17; if (kr < 9) kr = 9;
-    int cx = x + w - pad - kr - 4, cy = y + h / 2 + 1, n = 0;
+    /* in three sizes, as on the pedals: the big one for what a column is mostly for, the small
+     * ones for trims */
+    int size = knob_size(id), kr, cx, cy, n = 0;
+    if (tall) {
+        /* the value on tape over it, the name under it */
+        int big = (h - 42) / 2 - 6, wr = w / 2 - 14; if (big > wr) big = wr; if (big > 34) big = 34;
+        kr = size == 2 ? big : size == 1 ? big * 4 / 5 : big * 11 / 20; if (kr < 10) kr = 10;
+        cx = x + w / 2; cy = y + 20 + (h - 42) / 2;
+    } else {
+        int base = (h - 14) / 2; if (base > 17) base = 17;
+        kr = size == 2 ? base + 3 : size == 1 ? base : base * 7 / 10; if (kr > h / 2 - 3) kr = h / 2 - 3; if (kr < 8) kr = 8;
+        cx = x + w - pad - (size == 2 ? 17 : kr) - 4; cy = y + h / 2 + 1;
+    }
     float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
     if (d->kind == K_ENUM) { n = (int)(d->max - d->min) + 1; if (n > 12) n = 0; t = n > 1 ? (float)(int)(val - d->min + 0.5f) / (n - 1) : 0; }
     knob(cx, cy, kr, t, d->min < 0 && d->max > 0, n, off);
     if (seg) snprintf(v, sizeof v, "%s", seg[(int)(val + 0.5f) < nseg ? (int)(val + 0.5f) : 0]);
     else grid_value(id, v, sizeof v);
-    tape_l(lx, vy, vc, ts, v, cx - kr - 8 - lx);
+    if (tall) {
+        float sc = (int)(strlen(v) * FONT_CW * ts) + 8 <= w - 8 ? ts : 0.55f;
+        tape_l(x + (w - (int)(strlen(v) * FONT_CW * sc) - 8) / 2, vy, vc, sc, v, w - 4);
+    } else tape_l(lx, vy, vc, ts, v, cx - kr - 8 - lx);
 }
 
 /* a one-screen page's columns, and the most rows in one */
@@ -2311,7 +2345,7 @@ static void draw_grid(int y0, int y1)
     int pg = G.page, cur = PAGE_ROWS[pg][G.sel_row[pg]];
     int ncol, maxr; grid_dims(pg, &ncol, &maxr);
     int gap = 8, cw = (SW - 32 - (ncol - 1) * gap) / ncol, th = 24;
-    int rh = (y1 - y0 - th) / (maxr ? maxr : 1); if (rh > 64) rh = 64;
+    int rh = (y1 - y0 - th) / (maxr ? maxr : 1); if (rh > 110) rh = 110;   /* fewer rows: taller cells, bigger knobs */
     int c = -1, r = 0;
     for (int i = 0; GRID[pg][i] != ROW_END; i++) {
         int id = GRID[pg][i], x = 16 + c * (cw + gap), y = y0 + th + r * rh;

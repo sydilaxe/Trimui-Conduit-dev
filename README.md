@@ -214,7 +214,9 @@ click; on a synced track the window keeps its place in the bar.
 Every tab fits on one screen, laid out like a row of raw-aluminium pedals: the
 four track lanes on a plate at the top, then the tabs and the tab's settings on
 a second plate below, in titled columns with stamped names (two short settings
-often share a row). A setting is a black knob (its value on tape beside it), a
+often share a row). A setting is a black knob in one of three sizes, as on the pedals (big for a column's main
+setting, small for trims like *Fine* and *Rotate*; its value on tape beside or over it, and on tabs
+with few rows its name stamped under it), a
 selector knob for a list of choices (Filter, Channels, Slice), or a mini toggle
 for on / off and two- or three-way choices (1 / 0, Sync / Free). The light shows
 what's going on: each track's lamp, in a ring of LEDs going round with its loop,
