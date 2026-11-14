@@ -10,6 +10,7 @@
 #include "font_data.h"
 #include "net.h"
 #include "update.h"
+#include "applog.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -321,6 +322,8 @@ typedef struct {
     int learn;          /* target waiting for a MIDI control, -1 none */
     char midi_last[64];
     int running;
+    const char *quit_why;   /* for the log's END line */
+    Uint32 ev_ms;           /* when the event being handled happened (SDL ticks) */
 } App;
 
 static App G;
@@ -332,7 +335,7 @@ static void toast(int bad, const char *fmt, ...)
     vsnprintf(G.toast, sizeof G.toast, fmt, ap);
     va_end(ap);
     G.toast_until = SDL_GetTicks() + 2600; G.toast_bad = bad;
-    fprintf(stderr, "[conduit] %s\n", G.toast);
+    perf_log(bad ? "ERROR" : "NOTE", "%s", G.toast);
 }
 
 static Track *trk(int k) { return &G.eng.trk[k]; }
@@ -568,29 +571,43 @@ static void set_latency(void)
     if (G.out_dev) SDL_UnlockAudioDevice(G.out_dev);
 }
 
-static void out_cb(void *u, Uint8 *s, int len) { eng_render((Engine *)u, (float *)s, len / 8); }
+static void out_cb(void *u, Uint8 *s, int len)
+{
+    uint64_t t0 = perf_audio_begin(len / 8);
+    eng_render((Engine *)u, (float *)s, len / 8);
+    perf_audio_output((const float *)s, len / 8);
+    perf_audio_end(t0);
+}
 static void in_cb(void *u, Uint8 *s, int len) { eng_push_input((Engine *)u, (const float *)s, len / 8); }
 
 static SDL_AudioSpec want_spec(int capture)
 {
     SDL_AudioSpec w; memset(&w, 0, sizeof w);
-    w.freq = CD_SR; w.format = AUDIO_F32SYS; w.channels = 2; w.samples = 512;
+    /* CONDUIT_BUFFER (launch.sh): frames a buffer, a power of two 128..4096 (512 by default); bigger
+     * rides out a busy processor (the log's HINT says when), smaller answers sooner */
+    int frames = 512;
+    const char *bs = getenv("CONDUIT_BUFFER");
+    if (bs && atoi(bs) > 0) {
+        frames = 128;
+        while (frames < 4096 && frames < atoi(bs)) frames *= 2;
+    }
+    w.freq = CD_SR; w.format = AUDIO_F32SYS; w.channels = 2; w.samples = (Uint16)frames;
     w.callback = capture ? in_cb : out_cb; w.userdata = &G.eng;
     return w;
 }
 
 static int open_output(void)
 {
-    if (G.out_dev) SDL_CloseAudioDevice(G.out_dev);
+    if (G.out_dev) { SDL_CloseAudioDevice(G.out_dev); perf_audio_closed(0); }
     SDL_AudioSpec w = want_spec(0), got;
     G.out_dev = SDL_OpenAudioDevice(G.out_name[0] ? G.out_name : NULL, 0, &w, &got, 0);
     if (!G.out_dev && G.out_name[0]) {
         toast(1, "Output '%s' unavailable, using default", G.out_name);
         G.out_dev = SDL_OpenAudioDevice(NULL, 0, &w, &got, 0);
     }
-    if (!G.out_dev) { fprintf(stderr, "no audio output: %s\n", SDL_GetError()); return -1; }
+    if (!G.out_dev) { perf_log("ERROR", "no audio output: %s", SDL_GetError()); return -1; }
     G.out_block = got.samples;
-    fprintf(stderr, "output: %d Hz, %d ch, block %d\n", got.freq, got.channels, got.samples);
+    perf_audio_open(0, got.freq, got.samples, got.channels, G.out_name[0] ? G.out_name : "System default");
     set_latency();
     SDL_PauseAudioDevice(G.out_dev, 0);
     return 0;
@@ -610,7 +627,7 @@ static const char *choose_input(void)
 
 static void open_input(int announce)
 {
-    if (G.in_dev) { SDL_CloseAudioDevice(G.in_dev); G.in_dev = 0; }
+    if (G.in_dev) { SDL_CloseAudioDevice(G.in_dev); G.in_dev = 0; perf_audio_closed(1); }
     const char *want = choose_input();
     SDL_AudioSpec w = want_spec(1), got;
     G.in_dev = SDL_OpenAudioDevice(want, 1, &w, &got, 0);
@@ -626,7 +643,7 @@ static void open_input(int announce)
         G.eng.in_block = got.samples;
         G.eng.in_restart = 1;
         SDL_UnlockAudioDevice(G.out_dev);
-        fprintf(stderr, "capture '%s': %d Hz, %d ch, block %d\n", G.in_open, got.freq, got.channels, got.samples);
+        perf_audio_open(1, got.freq, got.samples, got.channels, G.in_open);
         set_latency();
         SDL_PauseAudioDevice(G.in_dev, 0);
         if (announce) toast(0, "Input: %s", G.in_open);
@@ -662,6 +679,8 @@ static int any_recording(void)
 
 static void busy_note(const char *msg)
 {
+    perf_where(msg);   /* "Saving...": what a STALL was */
+    perf_log("NOTE", "%s", msg);
     snprintf(G.toast, sizeof G.toast, "%s", msg);
     G.toast_until = SDL_GetTicks() + 5000; G.toast_bad = 0;
     if (G.ren) draw();
@@ -1028,6 +1047,7 @@ static void midi_tick(void)
 {
     MidiMsg m;
     while (midi_poll(&m)) {
+        perf_midi_in(1);
         char b[48]; Bind tmp = { m.type == MM_NOTE_OFF ? MM_NOTE : m.type, m.ch, m.num, 0 };
         bind_str(&tmp, b, sizeof b);
         snprintf(G.midi_last, sizeof G.midi_last, "%s%s", b, m.type == MM_CC || m.type == MM_PB ? "" : m.type == MM_NOTE ? " on" : " off");
@@ -1179,11 +1199,11 @@ static void press(int a)
         case A_DOWN: do_action(ACT_VERB, G.sel); break;
         case A_RIGHT: xy_toggle(); break;
         case A_LEFT: xy_centre(); break;
-        case A_MENU: G.running = 0; break;
+        case A_MENU: G.running = 0; G.quit_why = "closed with SELECT + MENU"; break;
         case A_L1: case A_R1:
             /* both: quit. One: scatter on / off (L1), its next variation (R1);
              * neither is saved, so pressing one first on the way out is harmless */
-            if (G.held[A_L1] && G.held[A_R1]) G.running = 0;
+            if (G.held[A_L1] && G.held[A_R1]) { G.running = 0; G.quit_why = "closed with SELECT + L1 + R1"; }
             else {
                 /* on the SEQ tab's master rows, the master scatter */
                 int r = G.page == PG_SEQ ? PAGE_ROWS[PG_SEQ][G.sel_row[PG_SEQ]] : 0;
@@ -1197,7 +1217,7 @@ static void press(int a)
 
     int row = G.page >= PG_MIDI ? 0 : PAGE_ROWS[G.page][G.sel_row[G.page]];
     switch (a) {
-    case A_MENU: G.running = 0; break;
+    case A_MENU: G.running = 0; G.quit_why = "closed with MENU"; break;
     case A_L1: G.page = (G.page + PG_N - 1) % PG_N; G.learn = -1; if (G.page == PG_FILES) scan_files(); break;
     case A_R1: G.page = (G.page + 1) % PG_N; G.learn = -1; if (G.page == PG_FILES) scan_files(); break;
     case A_UP: move_sel(-1); break;
@@ -1254,6 +1274,7 @@ static void update_input(int a);
 static void set_held(int a, int down)
 {
     if (a < 0 || a >= A_N) return;
+    if (!down != !G.held[a]) perf_input(a, ACT_KEY[a], down, G.ev_ms ? G.ev_ms : SDL_GetTicks());
     if (down && !G.held[a] && G.upd_open) { /* the prompt takes the press */
         G.held[a] = 1; G.held_since[a] = SDL_GetTicks(); G.upd_ate[a] = 1;
         update_input(a);
@@ -1322,15 +1343,16 @@ static void open_pads(void)
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) { if (SDL_GameControllerOpen(i)) G.have_gc = 1; }
         else SDL_JoystickOpen(i);
-        fprintf(stderr, "[conduit] pad %d: %s (%s)\n", i, SDL_JoystickNameForIndex(i),
-                SDL_IsGameController(i) ? "controller" : "raw joystick");
+        perf_log("PAD", "SDL pad %d: %s (%s)", i, SDL_JoystickNameForIndex(i),
+                 SDL_IsGameController(i) ? "controller" : "raw joystick");
     }
 }
 
 static void handle_event(SDL_Event *e)
 {
+    G.ev_ms = e->common.timestamp;
     switch (e->type) {
-    case SDL_QUIT: G.running = 0; break;
+    case SDL_QUIT: G.running = 0; G.quit_why = "closed by the system (SDL_QUIT)"; break;
     case SDL_KEYDOWN: if (!e->key.repeat) set_held(key_action(e->key.keysym.sym), 1); break;
     case SDL_KEYUP: set_held(key_action(e->key.keysym.sym), 0); break;
     case SDL_CONTROLLERBUTTONDOWN: set_held(gc_action(e->cbutton.button), 1); break;
@@ -1348,6 +1370,9 @@ static void handle_event(SDL_Event *e)
         break;
     }
     case SDL_CONTROLLERDEVICEADDED: case SDL_JOYDEVICEADDED: break;
+    case SDL_CONTROLLERDEVICEREMOVED: case SDL_JOYDEVICEREMOVED:
+        perf_log("PAD", "SDL: a controller went (instance %d)", (int)e->cdevice.which);
+        break;
     case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP:
         G.last_raw_btn = e->jbutton.button;
         if (G.have_gc) break;
@@ -1365,12 +1390,16 @@ static void handle_event(SDL_Event *e)
         if (e->jaxis.axis == 1) { set_held(A_UP, e->jaxis.value < -16000); set_held(A_DOWN, e->jaxis.value > 16000); }
         break;
     case SDL_AUDIODEVICEADDED:
+        perf_log("AUDIO", "%s device came: %s", e->adevice.iscapture ? "a capture" : "an output",
+                 SDL_GetAudioDeviceName((int)e->adevice.which, e->adevice.iscapture) ?: "?");
         if (e->adevice.iscapture && !G.in_name[0]) {
             const char *nm = SDL_GetAudioDeviceName((int)e->adevice.which, 1);
             if ((ci_contains(nm, "usb") && !ci_contains(G.in_open, "usb")) || !G.in_dev) open_input(1);
         }
         break;
     case SDL_AUDIODEVICEREMOVED:
+        perf_log("AUDIO", "%s device went (%s)", e->adevice.iscapture ? "a capture" : "an output",
+                 (e->adevice.iscapture ? e->adevice.which == G.in_dev : e->adevice.which == G.out_dev) ? "the one in use" : "not in use");
         if (G.in_dev && e->adevice.which == G.in_dev) {
             SDL_CloseAudioDevice(G.in_dev); G.in_dev = 0;
             toast(1, "Input disconnected");
@@ -1379,6 +1408,157 @@ static void handle_event(SDL_Event *e)
         if (G.out_dev && e->adevice.which == G.out_dev) { G.out_name[0] = 0; open_output(); }
         break;
     }
+}
+
+/* -------------------------------------------------------------- the log */
+
+/* What the app adds to log.txt (applog.h has the rest): ENGINE with each
+ * STAT line, and as they happen TRACK (a track's state), SET (a setting,
+ * once it has stayed put for a second), PAGE (the tab and track shown).
+ * Polled from the main thread: nothing on the audio thread. */
+
+/* a setting's value, short, from a number (the old value isn't in the engine any more) */
+static void log_value(int id, float v, char *o, size_t sz)
+{
+    const ParamDesc *d = &PD[id];
+    if (d->kind == K_ENUM && d->labels) { int i = (int)(v + 0.5f); snprintf(o, sz, "%s", i >= 0 && i <= (int)d->max ? d->labels[i] : "?"); return; }
+    switch (d->kind) {
+    case K_PCT: case K_SEND: case K_LOOPPOS: case K_DECAY: snprintf(o, sz, "%.0f%%", v * 100); break;
+    case K_PAN: snprintf(o, sz, "%+.0f", v * 100); break;
+    case K_DB: case K_GAIN: snprintf(o, sz, "%+.1f dB", v); break;
+    case K_MS: snprintf(o, sz, "%.0f ms", v); break;
+    case K_HZ: snprintf(o, sz, "%.0f Hz", v); break;
+    case K_SEC: snprintf(o, sz, "%.1f s", v); break;
+    case K_ST: snprintf(o, sz, "%+.0f st", v); break;
+    case K_CENTS: snprintf(o, sz, "%+.0f ct", v); break;
+    default: snprintf(o, sz, "%g", v); break;
+    }
+}
+
+static struct {
+    int ready;
+    float shown[P_COUNT], seen[P_COUNT];                  /* globals: logged, last looked at */
+    float tshown[CD_TRACKS][P_TRACK_N], tseen[CD_TRACKS][P_TRACK_N];
+    Uint32 changed[P_COUNT], tchanged[CD_TRACKS][P_TRACK_N];
+    int trk_state[CD_TRACKS], page, sel;
+    Uint32 window_at; int window_n, window_over;          /* at most 30 SET lines in 10 s */
+    uint32_t under, over;                                 /* the engine's counts at the last ENGINE line */
+    double ratio_said;
+} LG;
+
+static void log_set(const char *who, int id, float from, float to)
+{
+    Uint32 now = SDL_GetTicks();
+    if (now - LG.window_at > 10000) {
+        if (LG.window_over) perf_log("SET", "... and %d more changes", LG.window_over);
+        LG.window_at = now; LG.window_n = LG.window_over = 0;
+    }
+    if (++LG.window_n > 30) { LG.window_over++; return; }
+    char a[64], b[64];
+    log_value(id, from, a, sizeof a); log_value(id, to, b, sizeof b);
+    perf_log("SET", "%s%s: %s -> %s", who, PD[id].name, a, b);
+}
+
+/* 0 empty, 1 armed, 2 recording, 3 stopped, 4 playing, 5 overdubbing */
+static int log_trk_state(int k)
+{
+    Track *t = trk(k);
+    if (t->rec_state == ST_ARMED) return 1;
+    if (t->rec_state == ST_REC) return 2;
+    if (t->len < 2) return 0;
+    if (!t->playing) return 3;
+    return t->overdub ? 5 : 4;
+}
+
+static void log_watch(void)
+{
+    static const char *const names[] = { "empty", "armed (waits for the bar or the threshold)", "recording", "stopped",
+                                         "playing", "overdubbing" };
+    Uint32 now = SDL_GetTicks();
+    if (!LG.ready) {
+        memcpy(LG.shown, G.eng.p, sizeof LG.shown); memcpy(LG.seen, G.eng.p, sizeof LG.seen);
+        for (int k = 0; k < CD_TRACKS; k++) {
+            memcpy(LG.tshown[k], trk(k)->p, sizeof LG.tshown[k]); memcpy(LG.tseen[k], trk(k)->p, sizeof LG.tseen[k]);
+            LG.trk_state[k] = log_trk_state(k);
+        }
+        LG.page = -1; LG.window_at = now; LG.ready = 1;
+    }
+    /* settings: logged once they've stayed put for a second (a knob turned is one line) */
+    for (int id = P_TRACK_N; id < P_COUNT; id++) {
+        float v = G.eng.p[id];
+        if (v != LG.seen[id]) { LG.seen[id] = v; LG.changed[id] = now; }
+        else if (v != LG.shown[id] && now - LG.changed[id] >= 1000) { log_set("", id, LG.shown[id], v); LG.shown[id] = v; }
+    }
+    for (int k = 0; k < CD_TRACKS; k++)
+        for (int id = 0; id < P_TRACK_N; id++) {
+            float v = trk(k)->p[id];
+            if (v != LG.tseen[k][id]) { LG.tseen[k][id] = v; LG.tchanged[k][id] = now; }
+            else if (v != LG.tshown[k][id] && now - LG.tchanged[k][id] >= 1000) {
+                char who[16]; snprintf(who, sizeof who, "track %d ", k + 1);
+                log_set(who, id, LG.tshown[k][id], v); LG.tshown[k][id] = v;
+            }
+        }
+    /* the tracks */
+    for (int k = 0; k < CD_TRACKS; k++) {
+        int st = log_trk_state(k);
+        if (st == LG.trk_state[k]) continue;
+        Track *t = trk(k);
+        if (LG.trk_state[k] == 2 && st >= 3) {
+            /* a take: how long, and how loud (silence is the usual trouble) */
+            float pk = 0;
+            for (int i = 0; i < t->len * 2; i++) if (fabsf(t->buf[i]) > pk) pk = fabsf(t->buf[i]);
+            char len[48]; describe_len(len, sizeof len, t->len, t->synced ? t->cyc_rec : 0);
+            perf_log("TRACK", "track %d recorded %s (%.3f s), peak %.1f dB, %s", k + 1, len, t->len / (double)CD_SR,
+                     pk > 0 ? 20 * log10f(pk) : -120.f, names[st]);
+            if (pk < 0.003f)
+                perf_log("HINT", "track %d's take is (nearly) silent: check IO: the input device, Channels and Input gain, "
+                                 "and the interface's own gain", k + 1);
+        } else
+            perf_log("TRACK", "track %d %s", k + 1, names[st]);
+        LG.trk_state[k] = st;
+    }
+    if (G.page != LG.page || G.sel != LG.sel) {
+        perf_log("PAGE", "%s, track %d", PAGE_NAME[G.page], G.sel + 1);
+        LG.page = G.page; LG.sel = G.sel;
+    }
+}
+
+/* with each STAT line: the engine's side */
+static void log_engine(void)
+{
+    Engine *e = &G.eng;
+    uint32_t under = e->underruns, over = e->overruns;
+    char midi[160]; midi_devices(midi, sizeof midi);
+    int nfol, lstate; midi_link_status(&nfol, &lstate);
+    char trks[120] = "";
+    static const char *const sh[] = { "-", "armed", "rec", "stop", "play", "dub" };
+    for (int k = 0; k < CD_TRACKS; k++)
+        snprintf(trks + strlen(trks), sizeof trks - strlen(trks), "%s%d %s%s", k ? ", " : "", k + 1, sh[log_trk_state(k)],
+                 trk(k)->p[P_MUTE] > 0.5f ? " (muted)" : "");
+    char tr[96];
+    if (e->tr.cyc > 0)
+        snprintf(tr, sizeof tr, "bar %.3f s (%.1f BPM)%s%s", e->tr.cyc / CD_SR, 60.0 * CD_SR * e->p[P_BEATS] / e->tr.cyc,
+                 e->tr.linked ? ", following a Brick" : e->tr.following ? ", following MIDI clock" : "",
+                 e->tr.running ? "" : ", stopped");
+    else snprintf(tr, sizeof tr, "no bar yet");
+    perf_log("ENGINE", "input '%s'%s, peak %.1f dB | output peak %.1f dB | input FIFO: underruns %u (+%u), overflows %u "
+                       "(+%u), margin %d, clock x%.5f | %s | MIDI: %s | link: %d following, %s | tracks: %s",
+             G.in_open, G.in_failed ? " (failed)" : "", e->in_peak > 0 ? 20 * log10f(e->in_peak) : -120.f,
+             e->out_peak > 0 ? 20 * log10f(e->out_peak) : -120.f, under, under - LG.under, over, over - LG.over, e->margin,
+             e->in_ratio, tr, midi[0] ? midi : "none", nfol, lstate == 2 ? "a leader sending" : lstate == 1 ? "waiting for a leader" : "off",
+             trks);
+    if (under > LG.under && LG.under + 3 <= under)
+        perf_log("HINT", "the input ran dry %u times: the interface delivers unevenly (a bus-powered one on a weak "
+                         "port, or a busy hub); try a powered hub, or set CONDUIT_BUFFER=1024 in launch.sh", under - LG.under);
+    if (fabs(e->in_ratio - 1.0) > 0.01 && fabs(e->in_ratio - LG.ratio_said) > 0.001) {
+        LG.ratio_said = e->in_ratio;
+        perf_log("HINT", "the input runs %.2f%% %s than it says: followed (takes keep their pitch), but check the "
+                         "interface's sample rate setting", fabs(e->in_ratio - 1.0) * 100, e->in_ratio > 1 ? "faster" : "slower");
+    }
+    if (e->out_peak > 0.98f)
+        perf_log("NOTE", "the output reached %.1f dB: the soft clipper is rounding it off (turn Master or the tracks down "
+                         "for a clean sound)", 20 * log10f(e->out_peak));
+    LG.under = under; LG.over = over;
 }
 
 /* ----------------------------------------------------------- drawing */
@@ -2427,7 +2607,7 @@ static void update_watch(Uint32 now)
         G.relaunch_at = now + 1200; /* long enough to read "restarting" */
         if (!G.relaunch_at) G.relaunch_at = 1;
     }
-    if (G.relaunch_at && (Sint32)(now - G.relaunch_at) >= 0) G.running = 0;
+    if (G.relaunch_at && (Sint32)(now - G.relaunch_at) >= 0) { G.running = 0; G.quit_why = "closing to start the updated version"; }
 }
 
 /* A updates (or tries again), B or MENU closes the prompt */
@@ -2485,6 +2665,7 @@ static void draw(void)
 {
     Engine *e = &G.eng;
     Uint32 now = SDL_GetTicks();
+    uint64_t draw_t0 = perf_now_us();
     col(C_BG, 255); SDL_RenderClear(G.ren);
     SDL_SetRenderDrawBlendMode(G.ren, SDL_BLENDMODE_BLEND);
     if (tex_bg && grid_on) SDL_RenderCopy(G.ren, tex_bg, NULL, NULL);
@@ -2698,6 +2879,7 @@ static void draw(void)
         text(x + 20, y + 10, C_TEXT, 1.f, t);
     }
     SDL_RenderPresent(G.ren);
+    perf_frame(perf_now_us() - draw_t0, SDL_GetTicks());
 }
 
 /* -------------------------------------------------------- self test */
@@ -2717,11 +2899,14 @@ static int screenshot(const char *path)
 static void tick_ui(void)
 {
     SDL_Event ev;
-    while (SDL_PollEvent(&ev)) handle_event(&ev);
+    while (SDL_PollEvent(&ev)) { handle_event(&ev); G.ev_ms = 0; }   /* presses made in code (the self-test) are "now" */
     repeat_tick();
     midi_tick();
     sticks_tick();
     eng_ui_tick(&G.eng);
+    log_watch();
+    perf_tick();
+    if (perf_quit_requested() && G.running) { G.running = 0; G.quit_why = "asked to close by a signal"; }
 }
 
 /* Scripted run used by `make test-e2e` with SDL's disk audio driver:
@@ -2930,20 +3115,35 @@ static int selftest(const char *shot_dir)
 
 int main(int argc, char **argv)
 {
-    int test = 0; const char *shots = NULL;
+    int test = 0, crash_test = 0; const char *shots = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--selftest")) test = 1;
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) shots = argv[++i];
         else if (!strcmp(argv[i], "--version")) { puts("Conduit " CONDUIT_VERSION); return 0; }
+        else if (!strcmp(argv[i], "--crash-test")) crash_test = 1;
+    }
+#ifdef CONDUIT_TRIMUI
+    perf_init("CONDUIT", "Conduit " CONDUIT_VERSION " (TrimUI)");
+#else
+    perf_init("CONDUIT", "Conduit " CONDUIT_VERSION " (desktop)");
+#endif
+    perf_before_stat(log_engine);
+    if (crash_test) {
+        /* checks the CRASH lines: a write to an address no one has (not a null one, which the
+         * compiler may turn into a trap of its own) */
+        perf_where("the crash test (--crash-test)");
+        volatile int *bad = (volatile int *)(uintptr_t)strtoul("16", NULL, 10);
+        *bad = 1;
     }
     const char *rd = getenv("CONDUIT_REC_DIR"), *cf = getenv("CONDUIT_CFG");
     snprintf(G.rec_dir, sizeof G.rec_dir, "%s", rd && *rd ? rd : "recordings");
     snprintf(G.cfg_path, sizeof G.cfg_path, "%s", cf && *cf ? cf : "conduit.cfg");
     mkdirs(G.rec_dir);
+    perf_watch_dir(G.rec_dir);
     G.lane_h = 66; G.rows_vis = ROWS_VISIBLE;
     if (!(getenv("CONDUIT_GRID") && *getenv("CONDUIT_GRID") == '0')) { grid_on = 1; grid_apply(); }
 
-    if (eng_init(&G.eng, MAX_SECONDS)) { fprintf(stderr, "out of memory\n"); return 1; }
+    if (eng_init(&G.eng, MAX_SECONDS)) { perf_log("ERROR", "out of memory for the tracks"); perf_close("out of memory"); return 1; }
     build_targets();
     for (int k = 0; k < CD_TRACKS; k++) { G.send_mem[k] = 1.f; G.verb_mem[k] = 0.5f; }
     G.sel_row[PG_FX] = 1;   /* the first setting, under its heading */
@@ -2959,14 +3159,19 @@ int main(int argc, char **argv)
 
     SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS)) {
-        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1;
+        perf_log("ERROR", "SDL_Init: %s", SDL_GetError()); perf_close("SDL couldn't start"); return 1;
     }
     G.win = SDL_CreateWindow("Conduit", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SW, SH,
                              SDL_WINDOW_SHOWN | (getenv("CONDUIT_WINDOWED") ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP));
-    if (!G.win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
+    if (!G.win) { perf_log("ERROR", "window: %s", SDL_GetError()); perf_close("no window"); return 1; }
     G.ren = SDL_CreateRenderer(G.win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!G.ren) G.ren = SDL_CreateRenderer(G.win, -1, SDL_RENDERER_SOFTWARE);
-    if (!G.ren) { fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
+    if (!G.ren) { perf_log("ERROR", "renderer: %s", SDL_GetError()); perf_close("no renderer"); return 1; }
+    { SDL_RendererInfo ri; SDL_version sv; SDL_GetVersion(&sv);
+      if (!SDL_GetRendererInfo(G.ren, &ri))
+          perf_log("SYS", "SDL %d.%d.%d, video %s, renderer %s%s, audio %s", sv.major, sv.minor, sv.patch,
+                   SDL_GetCurrentVideoDriver(), ri.name, ri.flags & SDL_RENDERER_PRESENTVSYNC ? " (vsync)" : "",
+                   SDL_GetCurrentAudioDriver() ?: "?"); }
     SDL_RenderSetLogicalSize(G.ren, SW, SH);
     SDL_ShowCursor(0);
     /* MustardOS: the screen can stay dark once the window is up; mux_launch.sh points this at wake_screen.sh */
@@ -2995,11 +3200,16 @@ int main(int argc, char **argv)
     if (test) rc = selftest(shots);
     else
         while (G.running) {
+            perf_where("handling the buttons and MIDI");
             tick_ui();
+            perf_where("checking for an update");
             update_watch(SDL_GetTicks());
+            perf_where("drawing the screen");
             draw();
+            perf_where("waiting for the next frame");
             SDL_Delay(4);
         }
+    perf_where("closing");
 
     save_cfg();
     midi_stop();
@@ -3008,5 +3218,6 @@ int main(int argc, char **argv)
     SDL_DestroyTexture(G.font); SDL_DestroyRenderer(G.ren); SDL_DestroyWindow(G.win);
     SDL_Quit();
     eng_free(&G.eng);
+    perf_close(test ? (rc ? "the self-test failed" : "the self-test passed") : G.quit_why ? G.quit_why : "closed");
     return update_status()->state == UP_INSTALLED ? RELAUNCH_STATUS : rc; /* launch.sh starts the new version */
 }
