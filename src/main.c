@@ -1402,6 +1402,8 @@ static void handle_event(SDL_Event *e)
 #define INK 0x26272a         /* stamped letters */
 #define INK_LIGHT 0xe9eaeb   /* the stamp's lit lower edge */
 #define INK_OFF 0x86898d     /* stamped, for a control that does nothing now */
+#define PLATE_H_Y 4          /* the header's plate */
+#define PLATE_H_B 46
 #define PLATE_A_Y 50         /* the tracks' plate */
 #define PLATE_A_B 430
 #define PLATE_B_Y 436        /* the controls' plate */
@@ -1564,8 +1566,8 @@ static void make_bg(void)
             int v = 0x15 + (int)(h & 3);
             px[y * SW + x] = 0xff000000u | (Uint32)(v << 16 | (v + 1) << 8 | (v + 6));
         }
-    static const int pl[2][2] = { { PLATE_A_Y, PLATE_A_B }, { PLATE_B_Y, PLATE_B_B } };
-    for (int k = 0; grid_on && k < 2; k++) {
+    static const int pl[3][2] = { { PLATE_H_Y, PLATE_H_B }, { PLATE_A_Y, PLATE_A_B }, { PLATE_B_Y, PLATE_B_B } };
+    for (int k = 0; grid_on && k < 3; k++) {
         int x0 = 8, w = SW - 16, y0 = pl[k][0], hh = pl[k][1] - pl[k][0], rr = 10;
         for (int y = y0; y < y0 + hh; y++)
             for (int x = x0; x < x0 + w; x++) {
@@ -2487,11 +2489,18 @@ static void draw(void)
     SDL_SetRenderDrawBlendMode(G.ren, SDL_BLENDMODE_BLEND);
     if (tex_bg && grid_on) SDL_RenderCopy(G.ren, tex_bg, NULL, NULL);
 
-    /* header */
-    text(16, 12, C_ACCENT, 1.5f, "CONDUIT");
+    /* header: on its own plate, CONDUIT and the selected track stamped, its state a lamp */
     Uint32 sc; const char *st = track_state(G.sel, &sc);
-    fill(150, 12, 150, 32, sc, 50);
-    textf(150 + (150 - ((int)strlen(st) + 3) * FONT_CW) / 2, 16, sc, 1.f, "%d: %s", G.sel + 1, st);
+    if (grid_on) {
+        stamp(22, 11, 1.25f, 3, "CONDUIT");
+        lamp(184, 25, 7, sc, sc != C_DIM);
+        char sb[24]; snprintf(sb, sizeof sb, "%d %s", G.sel + 1, st);
+        stamp(200, 15, 0.85f, 2, sb);
+    } else {
+        text(16, 12, C_ACCENT, 1.5f, "CONDUIT");
+        fill(150, 12, 150, 32, sc, 50);
+        textf(150 + (150 - ((int)strlen(st) + 3) * FONT_CW) / 2, 16, sc, 1.f, "%d: %s", G.sel + 1, st);
+    }
     {
         /* transport: the beat, and where the bar comes from */
         int beats = (int)e->p[P_BEATS]; if (beats < 1) beats = 1;
@@ -2499,7 +2508,7 @@ static void draw(void)
         double ph = e->tr.phase;
         int lit = e->tr.running ? (int)((ph - floor(ph)) * beats) : -1;
         for (int b = 0; b < shown; b++)
-            if (grid_on) lamp(323 + b * 18, 28, 5, b == 0 ? C_ACCENT : C_PLAY, b == lit);
+            if (grid_on) lamp(316 + b * 17, 25, 5, b == 0 ? C_ACCENT : C_PLAY, b == lit);
             else fill(316 + b * 18, 22, 14, 14, b == lit ? (b == 0 ? C_ACCENT : C_PLAY) : C_PANEL2, 255);
         char tb[64];
         int nfol, lstate; midi_link_status(&nfol, &lstate);
@@ -2509,7 +2518,8 @@ static void draw(void)
         } else if (e->tr.cyc > 0) snprintf(tb, sizeof tb, "bar %.2f s (first loop)%s", e->tr.cyc / CD_SR,
                                            nfol ? "  LEADING" : "");
         else snprintf(tb, sizeof tb, "first loop sets the bar");
-        text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
+        if (grid_on) tape_l(316 + shown * 17 + 4, 15, e->tr.running ? C_TEXT : C_DIM, 0.75f, tb, 716 - (316 + shown * 17 + 4));
+        else text(316 + shown * 18 + 8, 16, e->tr.running ? C_TEXT : C_DIM, 0.9f, tb);
     }
     int grid = grid_page(G.page);
     int lst = grid_on && !grid;   /* MIDI, FILES: a list, laid out like the others */
@@ -2517,10 +2527,11 @@ static void draw(void)
         /* the new layout: the meters up here, thin */
         static const char *const ml[2] = { "IN", "OUT" };
         float pk[2] = { e->in_peak, e->out_peak };
+        well(724, 10, 230, 31, C_BG);   /* a window for them */
         for (int m = 0; m < 2; m++) {
             float db = pk[m] > 1e-6f ? 20.f * log10f(pk[m]) : -90.f;
             float t = (db + 60.f) / 60.f; t = t < 0 ? 0 : t > 1 ? 1 : t;
-            int my = 14 + m * 16, mx = 760;
+            int my = 14 + m * 15, mx = 756;
             text(mx - 30, my - 3, C_DIM, 0.55f, ml[m]);
             /* a ladder of LEDs: green, amber near the top, red at it */
             for (int i = 0; i < 24; i++) {
@@ -2534,8 +2545,8 @@ static void draw(void)
     }
     if (G.xy_on) {
         /* the X/Y pad: tracks 1 2 / 3 4 in the corners, the point, and where the left stick left it */
-        int px = 960, py = 6, pw = 48, ph = 44;
-        fill(px, py, pw, ph, C_PANEL2, 255);
+        int px = 962, py = grid_on ? 9 : 6, pw = grid_on ? 44 : 48, ph = grid_on ? 33 : 44;
+        if (grid_on) well(px, py, pw, ph, C_PANEL2); else fill(px, py, pw, ph, C_PANEL2, 255);
         static const char *const cn[CD_TRACKS] = { "1", "2", "3", "4" };
         for (int k = 0; k < CD_TRACKS; k++)
             text(px + (k & 1 ? pw - 9 : 2), py + (k & 2 ? ph - 15 : 0), k == G.sel ? C_ACCENT : C_DIM, 0.55f, cn[k]);
