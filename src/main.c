@@ -38,6 +38,8 @@
 #define LANE_Y 56
 #define LANE_W 908
 #define LANE_H (G.lane_h)
+#define LANE_H_GRID 92   /* every one-screen page's lanes: the same on all of them */
+#define MSEQ_H_GRID 26   /* SEQ's mix-scatter strip under them */
 #define LANE_STEP (G.lane_h + 4)
 
 /* ------------------------------------------------------------ params */
@@ -280,7 +282,7 @@ typedef struct {
     int trig_used[A_N];                     /* L2/R2 used as a fine / coarse modifier while held */
 
     int page, sel_row[PG_N], scroll[PG_N];
-    int lane_h;                             /* the track lanes' height: smaller on a one-screen page */
+    int lane_h;                             /* the track lanes' height: LANE_H_GRID, or 66 with the old lists */
     int rows_vis;                           /* list rows on screen */
     char files[MAX_FILES][256]; long fsize[MAX_FILES]; int nfiles;
     int del_confirm; Uint32 confirm_until; int clear_confirm;
@@ -1670,17 +1672,25 @@ static void draw_seq_lane(int k, int y)
 }
 
 /* the SEQ tab: the master scatter's steps in the bar, where the meters are */
-static void draw_master_seq(int y)
+static void draw_master_seq(int y, int h)
 {
     Engine *e = &G.eng;
     float tp[P_TRACK_N]; msc_params(e->p, tp);
     int beats = (int)e->p[P_BEATS]; if (beats < 1) beats = 1;
-    int mode = (int)tp[P_SC_MODE], nb = sc_bar_steps(tp, beats), h = 38;
+    int mode = (int)tp[P_SC_MODE], nb = sc_bar_steps(tp, beats), slim = h < 32;
     int live = e->msc.pos_ago >= 0 && e->tr.running;
     fill(16, y, 76, h, C_PANEL, 255);
-    text(24, y + 2, mode ? C_ACCENT : C_TEXT, 0.75f, "MIX");
     int frz = e->p[P_MSC_FREEZE] >= 0.5f;
-    text(24, y + 20, mode ? (live ? (frz ? C_DUB : C_PLAY) : C_DIM) : C_DIM, 0.6f, mode ? (live ? (frz ? "FROZEN" : "SCATTER") : "WAITS") : "off");
+    Uint32 stc = mode ? (live ? (frz ? C_DUB : C_PLAY) : C_DIM) : C_DIM;
+    const char *sts = mode ? (live ? (frz ? "FROZEN" : "SCATTER") : "WAITS") : "off";
+    if (slim) {
+        /* one line: MIX, and a dot for what it's doing */
+        text(24, y + (h - (int)(FONT_CH * 0.65f)) / 2, mode ? C_ACCENT : C_TEXT, 0.65f, "MIX");
+        if (mode) fill(70, y + h / 2 - 4, 8, 8, stc, 255);
+    } else {
+        text(24, y + 2, mode ? C_ACCENT : C_TEXT, 0.75f, "MIX");
+        text(24, y + 20, stc, 0.6f, sts);
+    }
     fill(LANE_X, y, LANE_W, h, C_PANEL, 255);
     int cnt = nb > 64 ? 64 : nb, cw = LANE_W / cnt;
     long g = live ? e->msc.g : -1, g0 = g >= 0 ? g / nb * nb : 0;
@@ -1689,10 +1699,10 @@ static void draw_master_seq(int y)
     for (int j = 0; j < cnt; j++) {
         int hit, slice, rev, rep, mute; double where;
         sc_decide(tp, MSC_TRACK, g0 + j, j, nb, beats, &hit, &slice, &where, &rev, &rep, &mute);
-        int x = LANE_X + j * cw, cy = y + 8, ch = h - 12;
+        int x = LANE_X + j * cw, cy = y + (slim ? 5 : 8), ch = h - (slim ? 7 : 12);
         double sb = j * step_beats;
         if (fabs(sb - floor(sb + 0.5)) < 1e-6)
-            fill(x, y + 1, 2, 5, ((long)floor(sb + 0.5)) % beats == 0 ? C_TEXT : C_DIM, 200);
+            fill(x, y + 1, 2, slim ? 3 : 5, ((long)floor(sb + 0.5)) % beats == 0 ? C_TEXT : C_DIM, 200);
         int a = mode == SC_OFF ? 40 : mute ? 0 : hit ? 230 : 70;
         fill(x + 2, cy, cw - 4, ch, C_BG, 255);
         if (a) fill(x + 2, cy, cw - 4, ch, hit ? C_ACCENT : C_WAVE, (Uint8)a);
@@ -1704,6 +1714,7 @@ static void draw_master_seq(int y)
             if (rep > 1) { size_t l = strlen(gl); snprintf(gl + l, sizeof gl - l, "x%d", rep); }
             if (rev) { size_t l = strlen(gl); snprintf(gl + l, sizeof gl - l, "<"); }
         }
+        if (slim) sc = 0.5f;
         if (gl[0] && (int)(strlen(gl) * FONT_CW * sc) <= cw - 4)
             text(x + (cw - (int)(strlen(gl) * FONT_CW * sc)) / 2, cy + (ch - (int)(FONT_CH * sc)) / 2, hit ? C_BG : C_TEXT, sc, gl);
     }
@@ -2186,28 +2197,21 @@ static void draw(void)
         text_right(1008, 18, G.in_failed ? C_REC : C_DIM, 0.8f, nm);
     }
 
-    /* a one-screen page: smaller lanes, and the controls in columns below */
-    G.lane_h = 66;
-    if (grid) {
-        /* the controls get the rows they need, the lanes what's left (fewer
-         * controls: bigger waveforms) */
-        int ncol, maxr; grid_dims(G.page, &ncol, &maxr);
-        int below = (G.page == PG_SEQ ? 42 : 0) + 4 + 34 + 8 + 24 + maxr * 50;
-        int lh = (724 - below - LANE_Y) / CD_TRACKS - 4;
-        G.lane_h = lh < 40 ? 40 : lh > 110 ? 110 : lh;
-    } else if (lst) G.lane_h = 70;
+    /* the lanes are the same on every page (the controls fit in what's below), so
+     * moving between pages never moves the waveforms */
+    G.lane_h = grid_on ? LANE_H_GRID : 66;
     for (int k = 0; k < CD_TRACKS; k++) draw_lane(k);
     int ym = LANE_Y + CD_TRACKS * LANE_STEP + (grid_on ? 0 : 12);
 
     /* meters */
-    if (G.page == PG_SEQ) draw_master_seq(grid ? ym : 342);
+    if (G.page == PG_SEQ && !grid) draw_master_seq(342, 38);
     else if (!grid_on) {
         meter(16, ym, 488, "IN", e->in_peak);
         meter(520, ym, 488, "OUT", e->out_peak);
     }
 
     /* tabs */
-    int ty = grid_on ? ym + (grid && G.page == PG_SEQ ? 42 : 0) : 384, tbh = grid_on ? 34 : 38;
+    int ty = grid_on ? ym : 384, tbh = grid_on ? 34 : 38;
     for (int i = 0; i < PG_N; i++) {
         int x = 16 + i * 142, on = i == G.page;
         fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
@@ -2218,7 +2222,12 @@ static void draw(void)
         else snprintf(nmt, sizeof nmt, "%s", PAGE_NAME[i]);
         text(x + (136 - (int)strlen(nmt) * FONT_CW) / 2, ty + (tbh - FONT_CH) / 2 - 1, on ? C_TEXT : C_DIM, 1.f, nmt);
     }
-    if (grid) draw_grid(ty + tbh + 8, 724);
+    if (grid) {
+        /* the tabs stay put too: SEQ's mix strip goes under them, over its columns */
+        int gy = ty + tbh + 8;
+        if (G.page == PG_SEQ) { draw_master_seq(gy - 2, MSEQ_H_GRID); gy += MSEQ_H_GRID + 4; }
+        draw_grid(gy, 724);
+    }
 
     /* rows */
     int y0 = 432, rh = 36;
