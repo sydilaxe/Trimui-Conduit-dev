@@ -35,6 +35,8 @@ echo old > $A/launch.sh
 echo mine > $A/conduit.cfg
 echo mine > $A/recordings/take.wav
 echo mine > $A/log.txt
+echo mine > $A/log.1.txt
+echo mine > $A/sysinfo.txt
 cp "$R/README.md" $A/
 touch -t 200101010000 $A/README.md
 
@@ -72,9 +74,9 @@ cmp -s $A/launch.sh "$R/launch.sh" || fail "launch.sh wasn't replaced"
 cmp -s $A/mux_launch.sh "$R/mux_launch.sh" || fail "mux_launch.sh wasn't replaced"
 test -x $A/mux_launch.sh || fail "mux_launch.sh isn't executable"
 cmp -s $A/glyph/conduit.svg "$R/glyph/conduit.svg" || fail "the glyph's folder wasn't made"
-for f in conduit.cfg recordings/take.wav log.txt; do
+for f in conduit.cfg recordings/take.wav log.txt log.1.txt sysinfo.txt; do
     test "$(cat $A/$f)" = mine || fail "the user's $f was overwritten"
 done
 test "$(date -r $A/README.md +%Y)" = 2001 || fail "an unchanged file was rewritten"
 test -z "$(find $A -name '*.new')" || fail ".new files were left behind"
-echo "update test: installed v9.9.9 (the .muxapp) over an older version, kept the settings, recordings and log, skipped the unchanged README"
+echo "update test: installed v9.9.9 (the .muxapp) over an older version, kept the settings, recordings, logs and system report, skipped the unchanged README"

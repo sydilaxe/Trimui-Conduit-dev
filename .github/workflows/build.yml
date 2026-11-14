@@ -39,7 +39,7 @@ jobs:
           fi
           pip install ziglang==0.14.1
           # the scripts the device runs: the launchers, the screen wake, the USB report
-          for s in Apps/Conduit/launch.sh Apps/Conduit/conduit_diag.sh mustardos/*.sh; do sh -n "$s"; done
+          for s in Apps/Conduit/launch.sh Apps/Conduit/conduit_diag.sh Apps/Conduit/sysinfo.sh mustardos/*.sh; do sh -n "$s"; done
           make -j"$(nproc)" package "$@"
           v=$(make -s version "$@")
           echo "built version $v"
@@ -57,7 +57,7 @@ jobs:
           m=build/Conduit-mustardos.muxapp
           ls -l $m
           # the updater needs cacert.pem for HTTPS; the binary carries Mbed TLS, so its licence goes along
-          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh recordings/README.txt \
+          for f in conduit launch.sh mux_launch.sh wake_screen.sh glyph/conduit.svg conduit_diag.sh sysinfo.sh recordings/README.txt \
               cacert.pem LICENSE-mbedtls.txt; do
             unzip -l $m | grep -q "Conduit/$f$" || { echo "::error::$m has no $f"; exit 1; }
           done
@@ -71,6 +71,7 @@ jobs:
           name: Conduit-mustardos
           path: |
             build/Conduit-mustardos.muxapp
+            build/trimui/conduit.debug
 
   test:
     name: Engine tests + desktop end-to-end (host)

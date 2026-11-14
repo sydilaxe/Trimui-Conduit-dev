@@ -34,9 +34,21 @@ in step with any new one. `make update-test` (CI runs it) checks it end to end.
 minutes after the last press): `idle_inhibit` re-set every 2 s and `caffeine`, given back on exit. The block
 is the same in Jaffedrone, Columbia Street, HI5, RadioScan and Conduit; keep the copies the same.
 
+The log (`src/applog.c`, `log.txt`; the README's Troubleshooting section lists its lines) grew from
+HI5's and RadioScan's `perflog.c`. It is Conduit's own copy, since its hints are Conduit's, but keep the
+lines they share (SYS, STAT, PROC, HINT, JUMP, END) in the same form. It captures stderr, so an
+`fprintf(stderr, ...)` anywhere becomes a timestamped MSG line. The audio callback only calls
+`perf_audio_begin` / `perf_audio_output` / `perf_audio_end`; everything else runs on the main
+thread or the monitor thread. When you add something that can fail, or a device or setting that
+changes performance, give it a line (`perf_log`, or a toast, which is logged) and, where it helps, a
+HINT. When you add a long operation, set `perf_where` (or call `busy_note`), so a STALL says what it
+was. `Apps/Conduit/sysinfo.sh` is the TrimUI apps' shared system report: keep it byte for byte the same
+as HI5's. `make` also links `build/trimui/conduit.debug`, unstripped, for reading a CRASH.
+
 `make test` runs the engine, MIDI parser and WAV unit tests (ASan/UBSan); `make test-e2e` runs the
 desktop build headless on SDL's disk audio driver (`tests/e2e.sh`: two synced tracks, FX, overdub,
-save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`). Keep both
+save, resample, reload, and MIDI clock and learning through a FIFO given as `CONDUIT_MIDI_DEV`; then
+that every kind of log line appeared, a crash is logged with `--crash-test`, and SIGTERM closes cleanly). Keep both
 passing; CI runs them and checks the packages in `.github/workflows/build.yml`.
 
 Releases take their version from the tag (CI builds with `make VERSION=<tag without v>`, compiled in

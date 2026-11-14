@@ -541,6 +541,70 @@ Conduit is open, `mux_launch.sh` asks MustardOS not to: it sets MustardOS's `idl
 back when Conduit closes. An empty file named `no_keep_awake` in the app folder leaves MustardOS's idle as
 it is.
 
+## Troubleshooting
+
+Conduit keeps a log of each run in its app folder
+(`MUOS/application/Conduit` on the SD card). Read it on a computer, or send
+it along with a bug report.
+
+| File | What's in it |
+|---|---|
+| `log.txt` | This run (or the last one): what happened, second by second. |
+| `log.1.txt`, `log.2.txt` | The two runs before it, so the log of a run that crashed is still there after you start Conduit again. |
+| `sysinfo.txt` | A report of the system at start (firmware, board, processor, memory, sound cards, USB, input devices), then a sample every 10 s while Conduit runs: load, clock, temperature, the busiest processes. |
+| `conduit_diag.txt` | USB audio and MIDI diagnostics, written when you run `conduit_diag.sh` (see [USB audio notes](#usb-audio-notes)). |
+
+Each line in `log.txt` starts with the seconds since Conduit started and a tag:
+
+| Tag | When | What |
+|---|---|---|
+| `SYS` | at start | The firmware, board, build, processor, memory, kernel, SDL and its drivers. |
+| `AUDIO` | as it happens | A sound device opened, closed, came or went. The output stopping (silence) and coming back. |
+| `STAT` | every 10 s | Audio load (how much of each buffer's time the sound took to make), dropouts, late callbacks, clicks, the screen's frame rate, the processor's clock and temperature. |
+| `PROC` | every 10 s | Processor time for the app and its busiest threads, memory, page faults. |
+| `ENGINE` | every 10 s | Input level, output level, the input FIFO (underruns mean the interface delivered unevenly), the input's real clock, tempo and sync, MIDI devices, the USB link, each track's state. |
+| `INPUT` | every 10 s | Button presses, how long a press took to show on the screen (average and worst), the longest hold, time since the last press, MIDI messages in. |
+| `HW` | every minute | Battery (charge, charging, volts, current), every temperature sensor, free space for recordings. Also when the charger is plugged in or out. |
+| `USB`, `SOUND`, `PAD` | as it happens | A USB device, sound card or input device plugged in (`+`) or out (`-`), and what was there at start. |
+| `TRACK` | as it happens | A track armed, recording, recorded (its length and loudness), playing, stopped, overdubbing. |
+| `SET` | as it happens | A setting changed, from what to what, once it has stayed put for a second (from the buttons, the sticks or MIDI). |
+| `PAGE` | as it happens | The tab and track on screen. |
+| `NOTE`, `ERROR` | as it happens | What the app showed you at the top of the screen. |
+| `MSG` | as it happens | What the MIDI reader, the USB link and the updater report. |
+| `HINT` | when something is wrong | What to try: a bigger buffer, a powered hub, the interface's sample rate, a silent take, low battery, a full card, a stuck button. |
+| `STALL` | when it happens | The screen didn't update for 2 s, and what the app was doing then. |
+| `SLEEP` | after it happens | The device was asleep, and for how long. |
+| `JUMP` | when it happens | A click made inside Conduit (one you hear without a `JUMP` comes from the sound system after it). |
+| `KEY` | at `CONDUIT_LOG=2` | Every press and release. |
+| `SIGNAL`, `CRASH` | when it happens | The system asked Conduit to close, or Conduit crashed: the signal, the faulting address, what it was doing, and a backtrace. |
+| `END` | at quit | How it closed, and the session's worst figures. |
+
+After the app closes, `launch.sh` adds a line with its exit status. A
+status over 128 means it was killed by a signal (139 is a crash).
+
+Settings for troubleshooting go in `launch.sh` (an update replaces that
+file, so set them again afterwards):
+
+- `CONDUIT_LOG=2`: a status line every second, and every button press.
+  `CONDUIT_LOG=0` turns the log off; crashes are still logged.
+- `CONDUIT_BUFFER=1024`: frames per sound buffer (512 by default). Bigger
+  rides out dropouts; the `HINT` lines say when to try it.
+- `CONDUIT_SYSINFO=0`: no `sysinfo.txt`.
+
+`log.txt` stops adding routine lines at 24 MB and stops entirely at 32 MB.
+
+**Reading a crash:** the `CRASH` lines give offsets into the binary
+(`binary + 0x...`). Each build (CI's *Conduit-mustardos* artifact, or
+`make`) has an unstripped `conduit.debug` next to it. Run this against the
+`conduit.debug` from the same version:
+
+```bash
+addr2line -f -C -e build/trimui/conduit.debug 0x1154c
+```
+
+`./conduit --crash-test` crashes on purpose, to check that crashes get
+logged.
+
 ## USB audio notes
 
 USB input needs two things from the firmware: the USB-C port must be in
@@ -618,6 +682,7 @@ Backspace=SELECT, Enter=START, Esc=MENU.
 
 ```
 src/main.c          UI, input (buttons, sticks, MIDI map), devices, save/load, self-test
+src/applog.c        the log (log.txt): timestamps, stderr, STAT / HW / INPUT, the monitor thread, crashes
 src/update.c, net.c self-update: GitHub's latest release, the download and unzip; HTTPS (Mbed TLS)
 src/dsp.c           engine: input FIFO, four tracks, sync transport (MIDI clock, the USB link), overdub/undo, FX, mixdown
 src/midi.c          USB MIDI in and clock out: raw ALSA devices, parser, reader thread; the USB link's leader side
@@ -627,7 +692,7 @@ src/midiverb2.c     MidiVerb II programs 45 and 49, exact (from midiverb_emulato
 src/bloom.c         the adjustable Bloom (the same design in floating point)
 src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
-Apps/Conduit/       the app folder: launch.sh, conduit_diag.sh
+Apps/Conduit/       the app folder: launch.sh, conduit_diag.sh, sysinfo.sh
 mustardos/          MustardOS: mux_launch.sh, wake_screen.sh, the list glyph
 third_party/        SDL2 headers for the cross build
 tools/              mksdlstub.py (link stub), genfont.py

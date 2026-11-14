@@ -36,8 +36,44 @@ PY
 FEED=$!
 SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILEIN="$W/in.raw" SDL_DISKAUDIOFILE="$W/out.raw" \
 SDL_VIDEODRIVER=dummy CONDUIT_WINDOWED=1 CONDUIT_MIDI_DEV="$W/midi" \
-CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/conduit.cfg" \
-  "$BIN" --selftest --shots "$W" || { kill $FEED 2>/dev/null; exit 1; }
+CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/conduit.cfg" CONDUIT_LOG=2 \
+  "$BIN" --selftest --shots "$W" 2>"$W/log.txt" || { cat "$W/log.txt"; kill $FEED 2>/dev/null; exit 1; }
 kill $FEED 2>/dev/null || true
+cat "$W/log.txt"
 ls -l "$W/rec"
 grep '^midi_' "$W/conduit.cfg"
+
+# the log (applog.h): every kind of line the run should give, at DETAIL
+fail() { echo "SELFTEST FAIL: $1"; exit 1; }
+for tag in LOG SYS AUDIO STAT PROC INPUT ENGINE HW TRACK SET PAGE KEY MSG END; do
+    grep -Eq "^ *[0-9]+\.[0-9]{3} $tag " "$W/log.txt" || fail "log.txt has no $tag line"
+done
+grep -q "MSG    SELFTEST PASS" "$W/log.txt" || fail "stderr isn't captured into the log"
+grep -Eq "INPUT  presses [1-9].*press to screen avg [0-9]+ ms" "$W/log.txt" || fail "the presses aren't timed"
+grep -Eq "TRACK  track 1 recorded .*peak -?[0-9.]+ dB" "$W/log.txt" || fail "a take isn't logged"
+grep -q "END    the self-test passed" "$W/log.txt" || fail "no END line"
+echo "ok   log.txt: every kind of line, stderr captured, takes and presses logged"
+
+# a crash: the signal, where, a backtrace, and the exit a crash gives
+rc=0
+SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/crash.cfg" \
+  "$BIN" --crash-test 2>"$W/crash.txt" || rc=$?
+cat "$W/crash.txt"
+test "$rc" = 139 || fail "the crash test exited $rc, not 139 (SIGSEGV)"
+grep -q "CRASH  SIGSEGV" "$W/crash.txt" || fail "no CRASH line"
+grep -q "the main thread was the crash test" "$W/crash.txt" || fail "the CRASH line doesn't say what the app was doing"
+grep -Eq "#[0-9]+ binary \+ 0x" "$W/crash.txt" || fail "no backtrace into the binary"
+echo "ok   a crash is logged: signal, address, what the app was doing, backtrace"
+
+# asked to close (MustardOS at shutdown): it closes as from the menu, saving its settings
+SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/term.cfg" \
+  "$BIN" 2>"$W/term.txt" &
+P=$!
+sleep 3
+kill -TERM $P
+rc=0; wait $P || rc=$?
+test "$rc" = 0 || { cat "$W/term.txt"; fail "after SIGTERM it exited $rc"; }
+grep -q "SIGNAL SIGTERM" "$W/term.txt" || fail "no SIGNAL line"
+grep -q "END    asked to close by a signal" "$W/term.txt" || fail "no END line after SIGTERM"
+test -s "$W/term.cfg" || fail "the settings weren't saved after SIGTERM"
+echo "ok   SIGTERM: logged, closed cleanly, settings saved"

@@ -20,7 +20,7 @@ APP      := conduit
 APPDIR   := Apps/Conduit
 SDL_INC  := third_party/SDL2-2.30.9-headers
 SRC      := src/main.c src/dsp.c src/wav.c src/midi.c src/link.c src/bloom.c src/midiverb2.c src/verb.c \
-            src/net.c src/update.c
+            src/net.c src/update.c src/applog.c
 HDR      := $(wildcard src/*.h)
 VERSION  ?= $(shell sed -n 's/^\#define CONDUIT_VERSION "\([^"]*\)".*/\1/p' src/main.c)
 
@@ -64,11 +64,14 @@ DEV_OBJ  := $(patsubst src/%.c,build/trimui/%.o,$(SRC))
 
 all: build/trimui/$(APP)
 
+# conduit.debug: the same build unstripped, with its debug information, to read a CRASH in log.txt
+# (addr2line -f -e build/trimui/conduit.debug 0x<offset>); the package carries the stripped one
 build/trimui/$(APP): $(DEV_OBJ) build/sdl2/libSDL2-2.0.so.0 build/zig/libmbedtls.a
+	$(DEV_CC) -o $@.debug $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -Wl,--allow-shlib-undefined
 	$(DEV_CC) -o $@ $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -Wl,--allow-shlib-undefined -s
 
 build/trimui/%.o: src/%.c $(HDR) build/version $(MBED_SRC) | build/trimui
-	$(DEV_CC) $(CFLAGS) -DCONDUIT_TRIMUI -I$(SDL_INC) -I$(MBED_DIR)/include -c -o $@ $<
+	$(DEV_CC) $(CFLAGS) -g -DCONDUIT_TRIMUI -I$(SDL_INC) -I$(MBED_DIR)/include -c -o $@ $<
 
 # a stand-in for the device's libSDL2-2.0.so.0, to link against (the firmware has the real one)
 build/sdl2/libSDL2-2.0.so.0: tools/mksdlstub.py $(SRC)
@@ -125,14 +128,14 @@ build/Conduit-mustardos.muxapp: build/trimui/$(APP) $(shell find $(APPDIR) $(MUX
 	mkdir -p build/mux/Conduit
 	cp -r $(APPDIR)/. build/mux/Conduit/
 	cp -r $(MUX)/. build/mux/Conduit/
-	rm -f build/mux/Conduit/conduit.cfg build/mux/Conduit/log.txt build/mux/Conduit/conduit_diag.txt \
+	rm -f build/mux/Conduit/conduit.cfg build/mux/Conduit/log*.txt build/mux/Conduit/sysinfo.txt build/mux/Conduit/conduit_diag.txt \
 		build/mux/Conduit/recordings/*.wav
 	cp build/trimui/$(APP) build/mux/Conduit/$(APP)
 	cp LICENSE build/mux/Conduit/LICENSE.txt
 	cp $(MBED_DIR)/LICENSE build/mux/Conduit/LICENSE-mbedtls.txt # the binary carries Mbed TLS
 	cp README.md build/mux/Conduit/README.md
 	echo $(VERSION) > build/mux/Conduit/VERSION
-	chmod +x build/mux/Conduit/launch.sh build/mux/Conduit/conduit_diag.sh build/mux/Conduit/$(APP) \
+	chmod +x build/mux/Conduit/launch.sh build/mux/Conduit/conduit_diag.sh build/mux/Conduit/sysinfo.sh build/mux/Conduit/$(APP) \
 		build/mux/Conduit/mux_launch.sh build/mux/Conduit/wake_screen.sh
 	cd build/mux && zip -qr ../Conduit-mustardos.muxapp Conduit
 	@echo "$@ ready: copy it into ARCHIVE on the MustardOS card and install it from the Archive Manager"
