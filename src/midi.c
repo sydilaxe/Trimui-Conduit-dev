@@ -211,18 +211,19 @@ int midi_link_pos(uint8_t *out, int max, double pos16, double bpm, int playing)
 /* 24 ticks a beat (6 a 16th): tick k goes when the sound heard reaches k/6 16ths.
  * Started on the first 16th: Start, and the next tick is the first. Started
  * later: song position (the next 16th) and Continue as the sound gets there. */
-int midi_clock_out(MidiClockOut *co, double pos16, int run, uint8_t *out, int max)
+int midi_clock_out(MidiClockOut *co, double pos16, int run, int transport, uint8_t *out, int max)
 {
     int n = 0;
     if (!run) {
-        if (co->running && n < max) out[n++] = 0xFC;
+        if (co->running && transport && n < max) out[n++] = 0xFC;
         co->running = co->pending = 0;
         return n;
     }
     long want = (long)floor(pos16 * 6.0);
     if (!co->running) {
         co->running = 1;
-        if (pos16 < 1.0 / 6.0) {
+        if (!transport) co->sent = want;   /* the ticks alone, from here */
+        else if (pos16 < 1.0 / 6.0) {
             out[n++] = 0xFA;
             co->sent = want;
         } else if (max >= 3) {
@@ -297,12 +298,15 @@ static int clock_step(double now)
 {
     double pos = 0, bpm = 0; int run = 0, fol = 0;
     int have = eng_heard(M.e, now, &pos, &bpm, &run, &fol);
+    /* out of the MIDI ports only when asked (CLOCK OUT), at OUT DIV's ratio, with Start and
+     * Stop or without (START OUT) */
     int lead = have && M.send_clock && M.e->p[P_CLOCK_OUT] > 0.5f && !fol;
     uint8_t out[32];
-    int n = midi_clock_out(&M.co, pos, lead && run, out, sizeof out);
+    int n = midi_clock_out(&M.co, pos * eng_clkdiv(M.e->p[P_OUT_DIV]), lead && run, M.e->p[P_START_OUT] > 0.5f, out, sizeof out);
     if (n) send_ports(out, n, 0);
-    /* to the Bricks following: where the sound is, leading or passing another clock on */
-    if (M.nl && have && (lead || fol) && now - M.link_sent >= 0.02) {
+    /* to the Bricks following (which asked to, by plugging in): where the sound is, at its own
+     * tempo, leading or passing another clock on */
+    if (M.nl && have && now - M.link_sent >= 0.02) {
         M.link_sent = now;
         n = midi_link_pos(out, sizeof out, pos, bpm, run);
         send_ports(out, n, 1);

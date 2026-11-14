@@ -42,6 +42,8 @@ typedef enum {
     P_MSC_FB, P_MSC_FREEZE,    /* the master's own: its output fed back, and held */
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
+    P_START_OUT,               /* Start / Stop sent with the clock, or the clock alone */
+    P_IN_DIV, P_OUT_DIV,       /* the clock in / out at a ratio of the tempo (CLKDIV_*) */
     P_COUNT
 } ParamId;
 
@@ -52,6 +54,10 @@ enum { SYNC_ON = 0, SYNC_FREE = 1 };       /* P_SYNC */
  * else the first loop */
 enum { CLOCK_INTERNAL = 0, CLOCK_MIDI = 1, CLOCK_AUTO = 2 };
 enum { START_FOLLOW = 0, START_IGNORE = 1 }; /* P_CLOCK_START: the clock's Start / Stop / Continue */
+/* P_IN_DIV, P_OUT_DIV: 1/4 1/3 1/2 2/3 x1 3/2 x2 x3 x4 (at 1/2 a clock at 120 runs the loops at 60;
+ * out, x2 sends double time) */
+enum { CLKDIV_X1 = 4, CLKDIV_N = 9 };
+double eng_clkdiv(float v);
 /* P_IN_PRINT: takes are the input as it comes (its effects only heard), or
  * the input through its effects (printed into the loop) */
 enum { IN_PRINT_DRY = 0, IN_PRINT_WET = 1 };
