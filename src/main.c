@@ -35,10 +35,10 @@
 #define MAX_FILES 512
 #define ROWS_VISIBLE 8
 #define LANE_X 100
-#define LANE_Y 56
+#define LANE_Y (grid_on ? 58 : 56)
 #define LANE_W 908
 #define LANE_H (G.lane_h)
-#define LANE_H_GRID 92   /* every one-screen page's lanes: the same on all of them */
+#define LANE_H_GRID 88   /* every one-screen page's lanes: the same on all of them */
 #define MSEQ_H_GRID 26   /* SEQ's mix-scatter strip under them */
 #define LANE_STEP (G.lane_h + 4)
 
@@ -1377,19 +1377,177 @@ static void handle_event(SDL_Event *e)
 
 /* ----------------------------------------------------------- drawing */
 
-#define C_BG 0x0d1015
-#define C_PANEL 0x161b23
-#define C_PANEL2 0x1f2631
-#define C_TEXT 0xe8e6e1
-#define C_DIM 0x8a919c
-#define C_ACCENT 0xe3b341
-#define C_WAVE 0x63c7ff
-#define C_REC 0xff5252
-#define C_PLAY 0x3ddc84
-#define C_DUB 0xff9f1c
+/* the look (TrimFX's): raw sandblasted aluminium plates on a dark board, hand-stamped
+ * lettering, dark recessed windows for the waveforms and readouts on Dymo tape, and light
+ * only where something is going on: jewel lamps and the tracks' rings */
+#define C_BG 0x0b0c0f        /* slots, the inside of a window */
+#define C_PANEL 0x16181d     /* a window */
+#define C_PANEL2 0x21242b    /* the selected one */
+#define C_TEXT 0xeceae4
+#define C_DIM 0x8b8e94
+#define C_ACCENT 0xff9a1f    /* what is selected (TrimFX's orange) */
+#define C_WAVE 0xe4e6e3      /* a playing track's audio: lit */
+#define C_WAVE_OFF 0x6a6e75  /* a stopped one's */
+#define C_REC 0xff3b30
+#define C_PLAY 0x47e07a
+#define C_DUB 0xffd23a
+#define BOARD 0x15171d
+#define ALU 0xc4c6c7
+#define INK 0x26272a         /* stamped letters */
+#define INK_LIGHT 0xe9eaeb   /* the stamp's lit lower edge */
+#define INK_OFF 0x86898d     /* stamped, for a control that does nothing now */
+#define PLATE_A_Y 50         /* the tracks' plate */
+#define PLATE_A_B 430
+#define PLATE_B_Y 436        /* the controls' plate */
+#define PLATE_B_B 724
 
 static void col(Uint32 c, Uint8 a) { SDL_SetRenderDrawColor(G.ren, c >> 16, (c >> 8) & 255, c & 255, a); }
 static void fill(int x, int y, int w, int h, Uint32 c, Uint8 a) { SDL_Rect r = { x, y, w, h }; col(c, a); SDL_RenderFillRect(G.ren, &r); }
+
+static uint32_t hash32(uint32_t x)
+{
+    x ^= x >> 16; x *= 0x7feb352d; x ^= x >> 15; x *= 0x846ca68b; x ^= x >> 16;
+    return x;
+}
+
+static int text(int x, int y, Uint32 c, float scale, const char *s);
+
+/* hand-stamped letters: each one a little off line, pressed in (dark, with a lit lower edge) */
+static int stamp_cw(float sc, int sp) { return (int)(FONT_CW * sc) + sp; }
+static int stamp_w(const char *s, float sc, int sp) { return (int)strlen(s) * stamp_cw(sc, sp) - sp; }
+static int stamp_ink(int x, int y, Uint32 ink, float sc, int sp, const char *s)
+{
+    char ch[2] = { 0, 0 };
+    uint32_t seed = 0;
+    for (const char *q = s; *q; q++) seed = seed * 31 + (uint8_t)*q;
+    int cw = stamp_cw(sc, sp);
+    for (int i = 0; s[i]; i++) {
+        if (s[i] == ' ') continue;
+        uint32_t h = hash32(seed + (uint32_t)i * 977u);
+        int dy = (int)(h % 4) - 1, dx = (int)((h >> 4) % 3) - 1;
+        ch[0] = (char)toupper((unsigned char)s[i]);   /* a stamp set has capitals only */
+        text(x + i * cw + dx + 1, y + dy + 1, INK_LIGHT, sc, ch);
+        text(x + i * cw + dx, y + dy, ink == INK && (h >> 9) % 5 == 0 ? 0x45474b : ink, sc, ch);
+    }
+    return stamp_w(s, sc, sp);
+}
+static int stamp(int x, int y, float sc, int sp, const char *s) { return stamp_ink(x, y, INK, sc, sp, s); }
+
+/* a window let into the metal: dark, its upper edge in shadow, its lower edge lit */
+static void fill(int x, int y, int w, int h, Uint32 c, Uint8 a);
+static void well(int x, int y, int w, int h, Uint32 c)
+{
+    fill(x - 1, y - 1, w + 2, h + 2, 0x050607, 255);
+    fill(x, y, w, h, c, 255);
+    fill(x - 1, y + h + 1, w + 2, 1, INK_LIGHT, 140);
+    fill(x + w + 1, y, 1, h + 1, INK_LIGHT, 70);
+}
+
+/* the lamps: a jewel lens with Fresnel rings, dull copper when off; lit, it glows in its colour */
+static SDL_Texture *tex_glow, *tex_disc, *tex_lens;
+static void make_lamps(void)
+{
+    enum { N = 64 };
+    Uint32 *px = malloc(N * N * 4);
+    for (int k = 0; k < 3; k++) {
+        for (int y = 0; y < N; y++)
+            for (int x = 0; x < N; x++) {
+                float dx = (x + 0.5f - N / 2.f) / (N / 2.f), dy = (y + 0.5f - N / 2.f) / (N / 2.f), d = sqrtf(dx * dx + dy * dy);
+                float a;
+                int v = 255;
+                if (k == 0) { a = d >= 1 ? 0 : (1 - d) * (1 - d); }
+                else {
+                    a = d > 1 ? 0 : d > 1 - 2.f / N * 1.5f ? (1 - d) / (2.f / N * 1.5f) : 1;
+                    if (k == 2) {
+                        /* the rings, and a highlight up and to the left */
+                        float ring = 0.78f + 0.22f * cosf(d * 26.f);
+                        float hl = expf(-((dx + 0.35f) * (dx + 0.35f) + (dy + 0.4f) * (dy + 0.4f)) * 18.f);
+                        float vv = ring * (0.75f + 0.25f * (1 - d)) + hl * 0.6f;
+                        v = (int)(255 * (vv > 1 ? 1 : vv));
+                    }
+                }
+                px[y * N + x] = (Uint32)(a * 255) << 24 | (Uint32)v << 16 | (Uint32)v << 8 | (Uint32)v;
+            }
+        SDL_Texture *t = SDL_CreateTexture(G.ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, N, N);
+        SDL_UpdateTexture(t, NULL, px, N * 4);
+        SDL_SetTextureBlendMode(t, k == 0 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
+        if (k == 0) tex_glow = t; else if (k == 1) tex_disc = t; else tex_lens = t;
+    }
+    free(px);
+}
+static void disc(int cx, int cy, float r, SDL_Texture *t, Uint32 c, Uint8 a)
+{
+    if (!t) return;
+    SDL_Rect d = { (int)(cx - r), (int)(cy - r), (int)(2 * r + 0.5f), (int)(2 * r + 0.5f) };
+    SDL_SetTextureColorMod(t, c >> 16, (c >> 8) & 255, c & 255);
+    SDL_SetTextureAlphaMod(t, a);
+    SDL_RenderCopy(G.ren, t, NULL, &d);
+}
+static Uint32 mixc(Uint32 a, Uint32 b, float t)
+{
+    int r = (int)(((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t), g = (int)(((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t),
+        bl = (int)((a & 255) * (1 - t) + (b & 255) * t);
+    return (Uint32)(r << 16 | g << 8 | bl);
+}
+static void lamp(int cx, int cy, int r, Uint32 c, int lit)
+{
+    disc(cx, cy + 1, r + 2.5f, tex_disc, INK_LIGHT, 160);   /* the bezel's lit lower edge */
+    disc(cx, cy, r + 2.f, tex_disc, 0x0c0d0f, 255);
+    if (lit) {
+        disc(cx, cy, r * 4.f, tex_glow, c, 90);
+        disc(cx, cy, r, tex_lens, mixc(c, 0xffffff, 0.25f), 255);
+        disc(cx, cy, r * 1.8f, tex_glow, c, 160);
+    } else disc(cx, cy, r, tex_lens, 0x6a4a34, 255);           /* unlit: dull copper */
+}
+/* a ring of small LEDs round a lamp: lit up to how far through it is */
+static void lamp_ring(int cx, int cy, float rr, int n, float frac, Uint32 c, int lit)
+{
+    int upto = (int)(frac * n + 0.5f);
+    for (int i = 0; i < n; i++) {
+        float a = -1.5707963f + 6.2831853f * i / n;
+        int x = cx + (int)lroundf(rr * cosf(a)), y = cy + (int)lroundf(rr * sinf(a));
+        if (lit && i < upto) { disc(x, y, 7.f, tex_glow, c, 120); disc(x, y, 2.6f, tex_disc, mixc(c, 0xffffff, 0.3f), 255); }
+        else disc(x, y, 2.4f, tex_disc, 0x34302c, 255);
+    }
+}
+
+/* the board and the two plates, made once: grainy board, speckled metal, rounded corners */
+static SDL_Texture *tex_bg;
+static void make_bg(void)
+{
+    Uint32 *px = malloc((size_t)SW * SH * 4);
+    if (!px) return;
+    for (int y = 0; y < SH; y++)
+        for (int x = 0; x < SW; x++) {
+            uint32_t h = hash32((uint32_t)(y * SW + x) * 2654435761u);
+            int v = 0x15 + (int)(h & 3);
+            px[y * SW + x] = 0xff000000u | (Uint32)(v << 16 | (v + 1) << 8 | (v + 6));
+        }
+    static const int pl[2][2] = { { PLATE_A_Y, PLATE_A_B }, { PLATE_B_Y, PLATE_B_B } };
+    for (int k = 0; grid_on && k < 2; k++) {
+        int x0 = 8, w = SW - 16, y0 = pl[k][0], hh = pl[k][1] - pl[k][0], rr = 10;
+        for (int y = y0; y < y0 + hh; y++)
+            for (int x = x0; x < x0 + w; x++) {
+                int dx = x < x0 + rr ? x0 + rr - x : x >= x0 + w - rr ? x - (x0 + w - rr - 1) : 0;
+                int dy = y < y0 + rr ? y0 + rr - y : y >= y0 + hh - rr ? y - (y0 + hh - rr - 1) : 0;
+                if (dx * dx + dy * dy > rr * rr) continue;
+                uint32_t hsh = hash32((uint32_t)(y * 7919 + x * 104729 + k));
+                int v = 0xb6 + (int)(hsh % 22) - 11;            /* the blast's speckle */
+                if ((hsh >> 8) % 97 == 0) v -= 38;              /* a pit here and there */
+                /* a little cloudy, as blasted metal is */
+                v += (int)(5.f * sinf(x * 0.013f + y * 0.007f) * cosf(y * 0.011f - x * 0.004f));
+                v += (int)(8.f * (1.f - (float)(y - y0) / hh));
+                v += x - x0 < 2 || y - y0 < 2 ? 22 : (x0 + w - x <= 3 || y0 + hh - y <= 3) ? -45 : 0;
+                v = v < 0 ? 0 : v > 255 ? 255 : v;
+                px[y * SW + x] = 0xff000000u | (Uint32)(v << 16 | v << 8 | (v + 2 > 255 ? 255 : v + 2));
+            }
+        for (int y = y0 + hh; y < y0 + hh + 3 && y < SH; y++)
+            for (int x = x0 + 4; x < x0 + w + 2 && x < SW; x++) px[y * SW + x] = 0xff0a0b0e;
+    }
+    tex_bg = SDL_CreateTexture(G.ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, SW, SH);
+    if (tex_bg) SDL_UpdateTexture(tex_bg, NULL, px, SW * 4);
+    free(px);
+}
 
 static int text(int x, int y, Uint32 c, float scale, const char *s)
 {
@@ -1584,7 +1742,8 @@ static void draw_seq_lane(int k, int y)
 {
     Track *t = trk(k);
     int on = k == G.sel, beats = (int)G.eng.p[P_BEATS]; if (beats < 1) beats = 1;
-    fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
+    if (grid_on) well(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL);
+    else fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
     int spb = sc_bar_steps(t->p, beats), n = spb, ls = 0, L = 0;
     if (t->len > 1 && t->rec_state != ST_REC) {
         int le; eng_loop_range(&G.eng, k, &ls, &le);
@@ -1729,16 +1888,39 @@ static void draw_lane(int k)
     int y = LANE_Y + k * LANE_STEP, on = k == G.sel;
     Uint32 sc; const char *st = track_state(k, &sc);
     /* number box */
+    if (grid_on) {
+        /* stamped in the metal: the number, what it's doing, and its lamp in a ring of
+         * LEDs that go round as the loop does (dark when nothing's going on) */
+        if (on) {
+            disc(54, y + LANE_H / 2, 50, tex_glow, C_ACCENT, 24);
+            fill(14, y - 2, 80, 2, C_ACCENT, 255); fill(14, y + LANE_H, 80, 2, C_ACCENT, 255); fill(14, y, 2, LANE_H, C_ACCENT, 255);
+            fill(LANE_X - 2, y - 2, LANE_W + 4, 2, C_ACCENT, 255); fill(LANE_X - 2, y + LANE_H, LANE_W + 4, 2, C_ACCENT, 255);
+            fill(LANE_X + LANE_W, y, 2, LANE_H, C_ACCENT, 255);
+        }
+        char nb[4]; snprintf(nb, sizeof nb, "%d", k + 1);
+        stamp(22, y + 4, 1.5f, 0, nb);
+        stamp(22, y + LANE_H - 20, 0.6f, 1, st);
+        int lit = sc != C_DIM;
+        int ls, le; float frac = 0;
+        if (t->rec_state == ST_REC) frac = 1;
+        else if (t->len > 1) { eng_loop_range(&G.eng, k, &ls, &le); if (le > ls && t->playing) frac = (float)(t->pos_i - ls) / (le - ls); }
+        frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+        lamp_ring(70, y + 28, 15, 16, frac, sc, lit && (t->playing || t->rec_state == ST_REC));
+        lamp(70, y + 28, 6, sc, lit);
+        if (t->p[P_MUTE] > 0.5f) stamp_ink(66, y + LANE_H - 22, C_REC, 0.7f, 0, "M");
+    } else {
     fill(16, y, 76, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
     if (on) fill(16, y, 5, LANE_H, C_ACCENT, 255);
-    if (LANE_H >= 60) {
+    }
+    if (grid_on) {
+    } else if (LANE_H >= 60) {
         textf(32, y + 2, on ? C_ACCENT : C_TEXT, 1.4f, "%d", k + 1);
         text(30, y + 42, sc, 0.7f, st);
     } else {
         textf(30, y + 2, on ? C_ACCENT : C_TEXT, 1.f, "%d", k + 1);
         text(28, y + LANE_H - 17, sc, 0.6f, st);
     }
-    if (t->p[P_MUTE] > 0.5f) text(64, y + 6, C_REC, 0.8f, "M");
+    if (!grid_on && t->p[P_MUTE] > 0.5f) text(64, y + 6, C_REC, 0.8f, "M");
     if (G.xy_on) {
         /* the X/Y mix's gain for this track */
         int bh = LANE_H - 8, gh = (int)(bh * t->xy + 0.5f);
@@ -1747,17 +1929,18 @@ static void draw_lane(int k)
     }
     if (G.page == PG_SEQ) { draw_seq_lane(k, y); return; }
     /* waveform */
-    fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
+    if (grid_on) well(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL);
+    else fill(LANE_X, y, LANE_W, LANE_H, on ? C_PANEL2 : C_PANEL, 255);
     int mid = y + LANE_H / 2;
     if (t->len > 1) {
         update_peaks(k);
         int ls, le; eng_loop_range(&G.eng, k, &ls, &le);
         int xs = LANE_X + (int)((long)ls * LANE_W / t->len), xe = LANE_X + (int)((long)le * LANE_W / t->len);
-        Uint32 wc = t->rec_state == ST_REC ? C_REC : t->overdub ? C_DUB : t->p[P_MUTE] > 0.5f ? C_DIM : C_WAVE;
+        Uint32 wc = t->rec_state == ST_REC ? C_REC : t->overdub ? C_DUB : t->p[P_MUTE] > 0.5f ? C_DIM : t->playing ? C_WAVE : C_WAVE_OFF;
         for (int c = 0; c < LANE_W; c++) {
             int x = LANE_X + c, h = (int)(sqrtf(G.peak[k][c]) * (LANE_H / 2 - 3));
             int inside = t->rec_state == ST_REC || (x >= xs && x < xe);
-            col(inside ? wc : C_DIM, inside ? 255 : 90);
+            col(inside ? wc : C_DIM, inside ? 255 : 70);
             SDL_RenderDrawLine(G.ren, x, mid - h, x, mid + h);
         }
         if (t->rec_state != ST_REC) {
@@ -1809,7 +1992,7 @@ static void draw_lane(int k)
                      t->p[P_REVERSE] > 0.5f ? "rev " : "", t->bend != 0.f ? "bend " : "", fx, t->p[P_VOLUME] * 100, pn);
         }
         int iw = (int)(strlen(info) * FONT_CW * 0.75f);
-        fill(LANE_X + LANE_W - 10 - iw, y + 1, iw + 10, (int)(FONT_CH * 0.75f) + 2, C_BG, 190);
+        fill(LANE_X + LANE_W - 10 - iw, y + 1, iw + 10, (int)(FONT_CH * 0.75f) + 2, C_BG, 200);
         text_right(LANE_X + LANE_W - 5, y + 2, C_TEXT, 0.75f, info);
     } else {
         const char *m = "";
@@ -1949,77 +2132,93 @@ static void grid_value(int id, char *o, size_t sz)
     snprintf(o, sz, "%.*s", (int)sz - 1, v);
 }
 
-/* a value right-aligned in the room the name leaves it: smaller when it's tight */
-static void grid_val_text(int xr, int y, Uint32 c, float ts, const char *v, int room)
+/* a readout on black Dymo tape, right-aligned at xr (smaller when it's tight, left out
+ * when it won't fit: the footer has it) */
+static void tape(int xr, int y, Uint32 c, float ts, const char *v, int room)
 {
     float sc = ts;
-    if ((int)(strlen(v) * FONT_CW * sc) > room) sc = 0.55f;
-    if ((int)(strlen(v) * FONT_CW * sc) > room) return;   /* the footer has it */
-    text_right(xr, y + (int)((ts - sc) * FONT_CH * 0.6f), c, sc, v);
+    if ((int)(strlen(v) * FONT_CW * sc) + 8 > room) sc = 0.55f;
+    int tw = (int)(strlen(v) * FONT_CW * sc);
+    if (tw + 8 > room) return;
+    int th = (int)(FONT_CH * sc), yy = y + (int)((ts - sc) * FONT_CH * 0.5f);
+    fill(xr - tw - 8, yy - 1, tw + 8, th + 2, 0x101114, 255);
+    fill(xr - tw - 8, yy + th + 1, tw + 8, 1, INK_LIGHT, 120);
+    text(xr - tw - 4, yy, c, sc, v);
 }
 
+/* a control on the plate: its name stamped, its value on tape, and a slot, a row of
+ * choices or a lamp to work it; the selected one ringed in orange */
 static void grid_cell(int x, int y, int w, int h, int id, int on)
 {
+    if (on) {
+        disc(x + w / 2, y + h / 2, w * 0.5f, tex_glow, C_ACCENT, 26);
+        fill(x - 2, y - 2, w + 4, 2, C_ACCENT, 255); fill(x - 2, y + h, w + 4, 2, C_ACCENT, 255);
+        fill(x - 2, y, 2, h, C_ACCENT, 255); fill(x + w, y, 2, h, C_ACCENT, 255);
+    }
     if (id < 0) {
         /* a device, folder or what's going on: words, not a control */
         int sel = id == ROW_IN_DEV || id == ROW_OUT_DEV;
-        fill(x, y, w, h, on ? C_PANEL2 : C_PANEL, 255);
-        if (on) fill(x, y, 4, h, C_ACCENT, 255);
-        char v[300]; int maxch = (int)((w - 24) / (FONT_CW * 0.62f));
+        char v[300]; int maxch = (int)((w - 28) / (FONT_CW * 0.62f));
         row_info(id, v, sizeof v, maxch);
         if ((int)strlen(v) > maxch) { char t[300]; fit(t, sizeof t, v, maxch); snprintf(v, sizeof v, "%s", t); }
-        text(x + 12, y + 5, on ? C_TEXT : C_DIM, 0.72f, row_label(id));
-        if (sel) text_right(x + w - 12, y + 5, C_DIM, 0.6f, "< >");
-        text(x + 12, y + h - 19, on && sel ? C_ACCENT : sel ? C_TEXT : C_DIM, 0.62f, v);
+        stamp(x + 10, y + 4, 0.7f, 1, row_label(id));
+        if (sel) stamp(x + w - 10 - stamp_w("< >", 0.6f, 0), y + 6, 0.6f, 0, "< >");
+        int tw = (int)(strlen(v) * FONT_CW * 0.62f);
+        fill(x + 8, y + h - 21, tw + 8, (int)(FONT_CH * 0.62f) + 2, 0x101114, 255);
+        text(x + 12, y + h - 20, on && sel ? C_ACCENT : sel ? C_TEXT : C_DIM, 0.62f, v);
         return;
     }
     const ParamDesc *d = &PD[id];
     int off = grid_off(id);
-    fill(x, y, w, h, on ? C_PANEL2 : C_PANEL, 255);
-    if (on) fill(x, y, 4, h, C_ACCENT, 255);
     char nm[48], v[64]; grid_name(id, nm, sizeof nm);
-    Uint32 lc = off ? 0x4a505a : on ? C_TEXT : C_DIM, vc = off ? 0x4a505a : on ? C_ACCENT : C_TEXT;
-    Uint32 bar = off ? C_PANEL2 : on ? C_ACCENT : C_WAVE;
-    int narrow = w < 160, pad = narrow ? 9 : 12;
-    float ts = narrow ? 0.66f : 0.72f;
-    int lx = x + pad, cw = w - 2 * pad, ly = y + 5, by = y + h - 12;
+    Uint32 ink = off ? INK_OFF : INK, vc = off ? C_DIM : on ? C_ACCENT : C_TEXT;
+    Uint32 lit = off ? 0x3a3c40 : on ? C_ACCENT : C_WAVE;
+    int narrow = w < 160, pad = narrow ? 8 : 10;
+    float ts = narrow ? 0.64f : 0.7f;
+    int lx = x + pad, cw = w - 2 * pad, ly = y + 4, by = y + h - 11;
     float val = *pp(id);
     int nseg; const char *const *seg = d->kind == K_ENUM ? grid_segs(id, &nseg) : NULL;
-    text(lx, ly, lc, ts, nm);
+    int nw = stamp_ink(lx, ly, ink, ts, 1, nm);
     if (d->kind == K_ENUM && d->labels == L_ONOFF) {
-        /* a switch */
-        int sw = narrow ? 38 : 46, sh = 22, sx = x + w - pad - sw, sy = y + (h - sh) / 2, onv = val > 0.5f;
-        fill(sx, sy, sw, sh, onv ? (off ? C_PANEL2 : C_ACCENT) : C_BG, 255);
-        fill(onv ? sx + sw - 20 : sx + 2, sy + 2, 18, sh - 4, onv ? C_BG : (off ? C_PANEL2 : C_DIM), 255);
-        text(lx, ly + 20, off ? 0x4a505a : onv ? C_TEXT : C_DIM, 0.6f, onv ? "On" : "Off");
+        /* a switch: a lamp, lit when it's on */
+        int onv = val > 0.5f;
+        lamp(x + w - pad - 9, y + h / 2, 7, on ? C_ACCENT : C_PLAY, onv && !off);
+        stamp_ink(lx, ly + 20, ink, 0.6f, 1, onv ? "ON" : "OFF");
     } else if (seg) {
-        /* a few choices side by side */
-        int sy = y + h - 24, sh = 19, gw = cw / nseg;
+        /* a few choices side by side, the one set lit */
+        int sy = y + h - 22, sh = 18, gw = cw / nseg;
+        well(lx, sy, gw * nseg - 3, sh, C_BG);
         for (int i = 0; i < nseg; i++) {
             int sel = (int)(val + 0.5f) == i, sx = lx + i * gw;
-            fill(sx, sy, gw - 3, sh, sel ? (off ? C_PANEL2 : on ? C_ACCENT : C_WAVE) : C_BG, 255);
-            int tw = (int)(strlen(seg[i]) * FONT_CW * 0.6f);
-            text(sx + (gw - 3 - tw) / 2, sy + 2, sel ? C_BG : (off ? 0x4a505a : C_DIM), 0.6f, seg[i]);
+            if (sel) { fill(sx, sy, gw - 3, sh, lit, 255); if (!off) disc(sx + gw / 2, sy + sh / 2, gw * 0.6f, tex_glow, lit, 50); }
+            else if (i) fill(sx - 2, sy + 3, 1, sh - 6, 0x2c2f35, 255);
+            int tw = (int)(strlen(seg[i]) * FONT_CW * 0.58f);
+            text(sx + (gw - 3 - tw) / 2, sy + 2, sel ? C_BG : (off ? 0x4a4d52 : C_DIM), 0.58f, seg[i]);
         }
     } else if (d->kind == K_ENUM) {
         /* more choices: the one set, and where it is among them */
         grid_value(id, v, sizeof v);
-        grid_val_text(x + w - pad, ly, vc, ts, v, cw - (int)(strlen(nm) * FONT_CW * ts) - 6);
+        tape(x + w - pad, ly, vc, ts, v, cw - nw - 6);
         int nn = (int)(d->max - d->min) + 1, gw = cw / nn;
+        well(lx, by + 2, cw - 2, 6, C_BG);
         for (int i = 0; i < nn; i++)
-            fill(lx + i * gw, by + 4, gw - 2, 4, (int)(val + 0.5f) == i ? bar : C_BG, 255);
+            if ((int)(val + 0.5f) == i) fill(lx + i * gw, by + 2, gw - 2, 6, lit, 255);
     } else {
-        /* a slider: from the middle when it goes either way */
+        /* a slider: a slot, lit from the end (or the middle, when it goes either way), and a
+         * black cap with a white line */
         grid_value(id, v, sizeof v);
-        grid_val_text(x + w - pad, ly, vc, ts, v, cw - (int)(strlen(nm) * FONT_CW * ts) - 6);
+        tape(x + w - pad, ly, vc, ts, v, cw - nw - 6);
         float t = (val - d->min) / (d->max - d->min); t = t < 0 ? 0 : t > 1 ? 1 : t;
-        fill(lx, by, cw, 6, C_BG, 255);
+        well(lx, by, cw, 5, C_BG);
+        int p = lx + (int)(cw * t);
         if (d->min < 0 && d->max > 0) {
-            int z = lx + (int)(cw * (-d->min / (d->max - d->min))), p = lx + (int)(cw * t);
-            fill(p < z ? p : z, by, abs(p - z), 6, bar, 255);
-            fill(z, by - 3, 1, 12, C_DIM, 255);
-        } else fill(lx, by, (int)(cw * t), 6, bar, 255);
-        fill(lx + (int)(cw * t) - 2, by - 4, 4, 14, off ? C_PANEL2 : on ? C_TEXT : C_DIM, 255);
+            int z = lx + (int)(cw * (-d->min / (d->max - d->min)));
+            fill(p < z ? p : z, by, abs(p - z), 5, lit, 255);
+            fill(z, by - 4, 1, 13, INK, 200);
+        } else fill(lx, by, p - lx, 5, lit, 255);
+        fill(p - 4, by - 6, 9, 17, 0x111214, 255);
+        fill(p - 4, by + 11, 9, 1, INK_LIGHT, 150);
+        fill(p, by - 5, 1, 15, off ? C_DIM : on ? C_ACCENT : 0xf4f4f2, 255);
     }
 }
 
@@ -2047,8 +2246,10 @@ static void draw_grid(int y0, int y1)
         if (id <= GCOL(0)) {
             c++; r = 0; x += cw + gap;
             char t[48]; snprintf(t, sizeof t, GRID_TITLE[GCOL(0) - id], G.sel + 1);
-            text(x + 2, y0 + 2, C_ACCENT, 0.7f, t);
-            fill(x, y0 + th - 6, cw, 2, C_PANEL2, 255);
+            int sp = stamp_w(t, 0.7f, 2) <= cw - 4 ? 2 : stamp_w(t, 0.7f, 1) <= cw - 4 ? 1 : 0;
+            stamp(x + 2, y0 + 3, sp ? 0.7f : 0.62f, sp, t);
+            fill(x, y0 + th - 6, cw, 1, INK, 110);
+            fill(x, y0 + th - 5, cw, 1, INK_LIGHT, 150);
             continue;
         }
         if (id == GPAIR) {
@@ -2144,6 +2345,7 @@ static void draw(void)
     Uint32 now = SDL_GetTicks();
     col(C_BG, 255); SDL_RenderClear(G.ren);
     SDL_SetRenderDrawBlendMode(G.ren, SDL_BLENDMODE_BLEND);
+    if (tex_bg && grid_on) SDL_RenderCopy(G.ren, tex_bg, NULL, NULL);
 
     /* header */
     text(16, 12, C_ACCENT, 1.5f, "CONDUIT");
@@ -2157,7 +2359,8 @@ static void draw(void)
         double ph = e->tr.phase;
         int lit = e->tr.running ? (int)((ph - floor(ph)) * beats) : -1;
         for (int b = 0; b < shown; b++)
-            fill(316 + b * 18, 22, 14, 14, b == lit ? (b == 0 ? C_ACCENT : C_PLAY) : C_PANEL2, 255);
+            if (grid_on) lamp(323 + b * 18, 28, 5, b == 0 ? C_ACCENT : C_PLAY, b == lit);
+            else fill(316 + b * 18, 22, 14, 14, b == lit ? (b == 0 ? C_ACCENT : C_PLAY) : C_PANEL2, 255);
         char tb[64];
         int nfol, lstate; midi_link_status(&nfol, &lstate);
         if (e->tr.following) {
@@ -2177,10 +2380,16 @@ static void draw(void)
         for (int m = 0; m < 2; m++) {
             float db = pk[m] > 1e-6f ? 20.f * log10f(pk[m]) : -90.f;
             float t = (db + 60.f) / 60.f; t = t < 0 ? 0 : t > 1 ? 1 : t;
-            int my = 14 + m * 16, mx = 760, mw = 180;
+            int my = 14 + m * 16, mx = 760;
             text(mx - 30, my - 3, C_DIM, 0.55f, ml[m]);
-            fill(mx, my, mw, 8, C_PANEL2, 255);
-            fill(mx, my, (int)(mw * t), 8, db > -1.f ? C_REC : db > -9.f ? C_ACCENT : C_PLAY, 255);
+            /* a ladder of LEDs: green, amber near the top, red at it */
+            for (int i = 0; i < 24; i++) {
+                float sv = (i + 0.5f) / 24, sdb = sv * 60.f - 60.f;
+                Uint32 c = sdb > -1.5f ? C_REC : sdb > -9.f ? C_ACCENT : C_PLAY;
+                int sx = mx + i * 8;
+                if (sv <= t) { fill(sx, my, 6, 8, c, 255); disc(sx + 3, my + 4, 7, tex_glow, c, 60); }
+                else fill(sx, my, 6, 8, mixc(c, BOARD, 0.8f), 255);
+            }
         }
     }
     if (G.xy_on) {
@@ -2214,22 +2423,30 @@ static void draw(void)
     }
 
     /* tabs */
-    int ty = grid_on ? ym : 384, tbh = grid_on ? 34 : 38;
+    int ty = grid_on ? PLATE_B_Y + 4 : 384, tbh = grid_on ? 30 : 38;
     for (int i = 0; i < PG_N; i++) {
         int x = 16 + i * 142, on = i == G.page;
-        fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
-        if (on) fill(x, ty + tbh - 4, 136, 4, C_ACCENT, 255);
         char nmt[24];
         if (i == PG_TRACK) snprintf(nmt, sizeof nmt, "TRACK %d", G.sel + 1);
         else if (i == PG_SEQ) snprintf(nmt, sizeof nmt, "SEQ %d", G.sel + 1);
         else snprintf(nmt, sizeof nmt, "%s", PAGE_NAME[i]);
+        if (grid_on) {
+            /* stamped, a lamp beside each: lit on the page you're on */
+            int tw = stamp_w(nmt, 0.8f, 2), tx = x + (136 - tw - 18) / 2 + 18;
+            lamp(tx - 13, ty + tbh / 2, 4, C_ACCENT, on);
+            stamp(tx, ty + (tbh - (int)(FONT_CH * 0.8f)) / 2, 0.8f, 2, nmt);
+            continue;
+        }
+        fill(x, ty, 136, tbh, on ? C_PANEL2 : C_PANEL, 255);
+        if (on) fill(x, ty + tbh - 4, 136, 4, C_ACCENT, 255);
         text(x + (136 - (int)strlen(nmt) * FONT_CW) / 2, ty + (tbh - FONT_CH) / 2 - 1, on ? C_TEXT : C_DIM, 1.f, nmt);
     }
+    if (grid_on) { fill(16, ty + tbh + 1, 992, 1, INK, 110); fill(16, ty + tbh + 2, 992, 1, INK_LIGHT, 150); }
     if (grid) {
         /* the tabs stay put too: SEQ's mix strip goes under them, over its columns */
         int gy = ty + tbh + 8;
         if (G.page == PG_SEQ) { draw_master_seq(gy - 2, MSEQ_H_GRID); gy += MSEQ_H_GRID + 4; }
-        draw_grid(gy, 724);
+        draw_grid(gy, PLATE_B_B - 4);
     }
 
     /* rows */
@@ -2238,21 +2455,20 @@ static void draw(void)
     if (lst) {
         /* titled like the other pages' columns, in cells */
         int hy = ty + tbh + 8;
-        if (G.page == PG_MIDI) { text(18, hy + 2, C_ACCENT, 0.7f, "CONTROL"); text(602, hy + 2, C_ACCENT, 0.7f, "MIDI"); }
-        else { char t[600]; snprintf(t, sizeof t, "RECORDINGS  in %s", G.rec_dir); char tf[90]; fit(tf, sizeof tf, t, 80);
-               text(18, hy + 2, C_ACCENT, 0.7f, tf); text_right(1006, hy + 2, C_ACCENT, 0.7f, "SIZE"); }
-        fill(16, hy + 18, 992, 2, C_PANEL2, 255);
+        if (G.page == PG_MIDI) { stamp(18, hy + 2, 0.7f, 2, "CONTROL"); stamp(602, hy + 2, 0.7f, 2, "MIDI"); }
+        else { char t[600]; snprintf(t, sizeof t, "RECORDINGS  in %s", G.rec_dir); char tf[90]; fit(tf, sizeof tf, t, 70);
+               stamp(18, hy + 2, 0.7f, 1, tf); stamp(1006 - stamp_w("SIZE", 0.7f, 2), hy + 2, 0.7f, 2, "SIZE"); }
         y0 = hy + 24; rh = 34;
-        G.rows_vis = (724 - y0) / rh;
+        G.rows_vis = (PLATE_B_B - 4 - y0) / rh;
     } else G.rows_vis = ROWS_VISIBLE;
     if (G.sel_row[G.page] >= G.scroll[G.page] + G.rows_vis) G.scroll[G.page] = G.sel_row[G.page] - G.rows_vis + 1;
     int sc0 = G.scroll[G.page];
-    if (G.page == PG_FILES && n == 0) textf(32, y0 + 10, C_DIM, 1.f, "No recordings yet in %s", G.rec_dir);
+    if (G.page == PG_FILES && n == 0) textf(32, y0 + 10, grid_on ? INK : C_DIM, 1.f, "No recordings yet in %s", G.rec_dir);
     for (int k = 0; !grid && k < G.rows_vis && sc0 + k < n; k++) {
         int i = sc0 + k, y = y0 + k * rh, on = i == G.sel_row[G.page];
         float ts = lst ? 0.8f : 1.f;
         int tyo = lst ? 6 : 4;
-        if (lst) { fill(16, y, 986, rh - 4, on ? C_PANEL2 : C_PANEL, 255); if (on) fill(16, y, 4, rh - 4, C_ACCENT, 255); }
+        if (lst) { well(16, y, 986, rh - 6, on ? C_PANEL2 : C_PANEL); if (on) fill(16, y, 4, rh - 6, C_ACCENT, 255); }
         else if (on) { fill(16, y, 992, rh - 4, C_PANEL2, 255); fill(16, y, 5, rh - 4, C_ACCENT, 255); }
         char v[300], nm2[120];
         if (G.page == PG_FILES) {
@@ -2301,7 +2517,7 @@ static void draw(void)
     }
 
     /* footer */
-    fill(0, 728, SW, 40, C_PANEL, 255);
+    if (!grid_on) fill(0, 728, SW, 40, C_PANEL, 255);
     const char *hint = G.page == PG_FILES ? "A load into track   Y delete   B play   L2/R2 track   L1/R1 tab"
         : G.page == PG_MIDI ? "A learn (move a knob / hit a pad)   Y unmap   B cancel   L1/R1 tab"
         : G.held[A_SEL] ? "SEL+ START all  A trk  B undo  X erase  Y resamp  L2 mute  R2 all  UP fx  DN rev  RT xy  L1 scatter  R1 next"
@@ -2606,6 +2822,8 @@ int main(int argc, char **argv)
     { const char *wake = getenv("CONDUIT_SCREEN_WAKE");
       if (wake && *wake) { char cmd[600]; snprintf(cmd, sizeof cmd, "'%s' >/dev/null 2>&1 &", wake); if (system(cmd)) {} } }
     make_font();
+    make_lamps();
+    make_bg();
     open_pads();
 
     if (open_output()) { toast(1, "No audio output available"); }
