@@ -20,6 +20,7 @@ typedef enum {
     /* scatter: the loop in slices on the beat, played in a pattern */
     P_SC_MODE, P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_VAR,
     P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_EVOLVE,
+    P_SC_ATTACK,               /* ms: a slice that jumps in fades in this long (the old one fades out) */
     P_TRACK_N,
     /* global (Engine.p) */
     P_MASTER = P_TRACK_N, P_MONITOR,
@@ -38,7 +39,7 @@ typedef enum {
     /* master scatter: the whole mix (after the FX, before the live input),
      * its settings as a track's P_SC_* (same order) */
     P_MSC_MODE, P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_VAR,
-    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_EVOLVE,
+    P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_EVOLVE, P_MSC_ATTACK,
     P_MSC_FB, P_MSC_FREEZE,    /* the master's own: its output fed back, and held */
     /* sync */
     P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_CLOCK_OUT,
@@ -77,13 +78,24 @@ enum { SC_TRIG_RANDOM, SC_TRIG_EUCLID };
 enum { SC_SZ_BAR, SC_SZ_2, SC_SZ_4, SC_SZ_4T, SC_SZ_8D, SC_SZ_8, SC_SZ_8T, SC_SZ_16D, SC_SZ_16, SC_SZ_16T,
        SC_SZ_32, SC_SZ_64, SC_SIZES };
 
+/* a slice fading out after a jump: it plays on from where it was, the way
+ * it was going, so the fade starts from exactly what was heard */
+#define SC_VOICES 4
+typedef struct {
+    double pos, vel;           /* where it reads, frames a frame (negative: backwards) */
+    float g0;                  /* its level when the jump came (it may have been fading in) */
+    int left, len;             /* frames of its fade left, and all of them (0: free) */
+} ScFade;
+
 /* a track's scatter player: where it is in the pattern and what it last read */
 typedef struct {
     int active;                /* it played the last frame */
     int step;                  /* slice the playhead is in */
     long pass;                 /* times round the loop */
     double last;               /* where it read the last frame */
-    double xpos; int xleft;    /* a jump: where it was, fading out */
+    double vel;                /* how it was reading then: frames a frame (negative: backwards) */
+    float att;                 /* the slice's attack, 0..1 (shaped when applied) */
+    ScFade fade[SC_VOICES];    /* the slices it jumped from, fading out */
     float env;                 /* the gate */
     /* the last step's decision (it holds for the whole step) and what it was for */
     long cg; int cn, cvalid;

@@ -1119,13 +1119,16 @@ static void hw_line(void)
     perf_log("HW", "%s | %s%s | up %s s", pw, th[0] ? th : "no thermal zones", disk, up[0] ? up : "?");
 }
 
+/* the time spent asleep since boot (µs): the boot clock runs on through a
+ * suspend, the monotonic one doesn't. Read monotonic first, and never below
+ * 0: awake, the two are the same but for the moment between the reads. */
 static uint64_t boot_minus_mono(void)
 {
     struct timespec b, m;
-    clock_gettime(CLOCK_BOOTTIME, &b);
     clock_gettime(CLOCK_MONOTONIC, &m);
-    return ((uint64_t)b.tv_sec * 1000000ULL + (uint64_t)b.tv_nsec / 1000) -
-           ((uint64_t)m.tv_sec * 1000000ULL + (uint64_t)m.tv_nsec / 1000);
+    clock_gettime(CLOCK_BOOTTIME, &b);
+    int64_t d = ((int64_t)b.tv_sec - (int64_t)m.tv_sec) * 1000000LL + ((int64_t)b.tv_nsec - (int64_t)m.tv_nsec) / 1000;
+    return d > 0 ? (uint64_t)d : 0;
 }
 
 enum { MH_BATT, MH_DISK, MH_COUNT };
@@ -1145,7 +1148,7 @@ static void *monitor(void *u)
         uint64_t now = perf_now_us();
         /* asleep: the monotonic clock stood still while the boot clock ran */
         uint64_t slept = boot_minus_mono();
-        if (slept > slept0 + 2000000ULL) {
+        if (slept > slept0 && slept - slept0 > 2000000ULL) {
             perf_log("SLEEP", "the device was asleep for %.0f s", (slept - slept0) / 1e6);
             SET(main_beat, now);
         }

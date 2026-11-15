@@ -32,6 +32,7 @@ void eng_default_track(float *tp)
     tp[P_VOLUME] = 0.9f; tp[P_PAN] = 0.f; tp[P_MUTE] = 0.f; tp[P_FX_SEND] = 1.f; tp[P_VERB_SEND] = 0.f; tp[P_SYNC] = SYNC_ON;
     tp[P_SC_MODE] = SC_OFF; tp[P_SC_DIV] = SC_SZ_16; tp[P_SC_AMOUNT] = 0.5f; tp[P_SC_GATE] = 1.f; tp[P_SC_BARS] = 0.f; tp[P_SC_VAR] = 0.f;
     tp[P_SC_TRIG] = SC_TRIG_EUCLID; tp[P_SC_HITS] = 5.f; tp[P_SC_STEPS] = 0.f; tp[P_SC_ROT] = 0.f; tp[P_SC_EVOLVE] = 0.f;
+    tp[P_SC_ATTACK] = 3.f;
 }
 
 void eng_default_params(float *p)
@@ -47,7 +48,7 @@ void eng_default_params(float *p)
     p[P_IN_FX_SEND] = 0.f;  p[P_IN_VERB_SEND] = 0.f; p[P_IN_PRINT] = IN_PRINT_DRY;
     {   /* master scatter: as a track's */
         float tp[P_TRACK_N]; eng_default_track(tp);
-        for (int i = 0; i <= P_SC_EVOLVE - P_SC_MODE; i++) p[P_MSC_MODE + i] = tp[P_SC_MODE + i];
+        for (int i = 0; i <= P_SC_ATTACK - P_SC_MODE; i++) p[P_MSC_MODE + i] = tp[P_SC_MODE + i];
         p[P_MSC_FB] = 0.f; p[P_MSC_FREEZE] = 0.f;
     }
     p[P_CLOCK] = CLOCK_INTERNAL; p[P_REC_WAIT] = 1.f; p[P_BEATS] = 4.f; p[P_CLOCK_OFS] = 0.f;
@@ -728,11 +729,57 @@ static void sc_decide_c(Scatter *s, const float *tp, int track, long g, int st, 
     *hit = s->c_hit; *slice = s->c_slice; *where = s->c_where; *rev = s->c_rev; *rep = s->c_rep; *mute = s->c_mute;
 }
 
+/* Where scatter's read jumps (a slice from elsewhere, a repeat, backwards),
+ * the slice that was playing fades out from exactly where it was, going the
+ * way it went, and the new one fades in over Slice attack. Both on a smooth
+ * curve (s(x) + s(1 - x) = 1: no dip or bump where the two are the same
+ * sound). A short attack only takes the click off the cut; a long one is a
+ * swell after it, the old slice gone within 10 ms. Up to SC_VOICES slices
+ * fade out at once, so pieces shorter than the fade (a 64th stuttered) never
+ * cut one off half way. */
+static inline float smooth01(float x)
+{
+    x = x < 0.f ? 0.f : x > 1.f ? 1.f : x;
+    return x * x * (3.f - 2.f * x);
+}
+
+/* Slice attack in frames: 1 ms at least (a cut is never hard), 100 ms at most */
+static inline int sc_attack_frames(const float *tp)
+{
+    return (int)(clampf(tp[P_SC_ATTACK], 1.f, 100.f) * CD_SR / 1000.f);
+}
+
+/* a jump: what was playing goes on fading out; the new slice starts its attack */
+static void sc_jump(Scatter *s, int att)
+{
+    float g = smooth01(s->att);
+    if (g > 1e-4f) {
+        int k = 0; float least = 2.f;   /* a free voice, or the quietest */
+        for (int i = 0; i < SC_VOICES; i++) {
+            const ScFade *v = &s->fade[i];
+            float w = v->left > 0 ? v->g0 * smooth01((float)v->left / v->len) : 0.f;
+            if (w < least) { least = w; k = i; }
+        }
+        int rel = att < CD_SR / 100 ? att : CD_SR / 100;
+        s->fade[k] = (ScFade){ s->last + s->vel, s->vel, g, rel, rel };
+    }
+    s->att = 0.f;
+}
+
+/* the new slice's level now, then a frame on in its attack */
+static inline float sc_att_step(Scatter *s, int att)
+{
+    float g = smooth01(s->att);
+    if (s->att < 1.f) { s->att += 1.f / att; if (s->att > 1.f) s->att = 1.f; }
+    return g;
+}
+
 /* track k's loop through its scatter pattern at the playhead pos: the slice
- * the pattern puts there, crossfaded where it jumps, through the gate */
+ * the pattern puts there, faded where it jumps, through the gate */
 static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int len, int ls, int le, int xf,
                     double pos, double speed, double bar, int beats, float *l, float *r)
 {
+    (void)len;
     int L = le - xf - ls;
     int n = sc_steps(tp, L, bar, beats);
     double SL = (double)L / n, rel = pos - ls;
@@ -740,7 +787,11 @@ static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int le
     if (rel >= L) rel = L - 1e-6;
     int st = (int)(rel / SL); if (st >= n) st = n - 1;
     double f = rel - st * SL;
-    if (!s->active) { s->pass = 0; s->step = st; s->last = pos - speed; s->env = 1.f; s->xleft = 0; }
+    int att = sc_attack_frames(tp);
+    if (!s->active) {
+        s->pass = 0; s->step = st; s->last = pos - speed; s->vel = speed; s->env = 1.f; s->att = 1.f;
+        memset(s->fade, 0, sizeof s->fade);
+    }
     else if (st != s->step) {
         if (speed >= 0 ? st < s->step : st > s->step) s->pass++;
         s->step = st;
@@ -752,35 +803,41 @@ static void sc_read(Scatter *s, const float *tp, int k, const float *buf, int le
     double src = where >= 0 ? ls + fmod(where * L + off, (double)L) : ls + slice * SL + off;
     if (src >= ls + L) src -= L;
     if (src < ls) src = ls;
-    /* the gate: the first Gate of each piece sounds, with 2 ms fades */
+    /* the gate: the first Gate of each piece sounds, in over Slice attack, out in 2 ms */
     double prog = (speed >= 0 ? f2 : piece - f2) / piece;
     float gate = clampf(tp[P_SC_GATE], 0.05f, 1.f);
     float target = !mute && (gate >= 0.999f || prog < gate) ? 1.f : 0.f;
-    const float ramp = 1.f / (CD_SR * 0.002f);
-    if (s->env < target) { s->env += ramp; if (s->env > target) s->env = target; }
-    else if (s->env > target) { s->env -= ramp; if (s->env < target) s->env = target; }
-    /* a jump in where it reads: the old place fades out under the new */
-    double expect = s->last + speed;
-    if (fabs(src - expect) > JUMP_TOL) { s->xpos = expect; s->xleft = CD_FADE; }
+    const float down = 1.f / (CD_SR * 0.002f), up = 1.f / att;
+    if (s->env < target) { s->env += up; if (s->env > target) s->env = target; }
+    else if (s->env > target) { s->env -= down; if (s->env < target) s->env = target; }
+    /* a jump in where it reads (against the way it was reading), or a turn
+     * (backwards from where it is: no jump, but a corner in the sound) */
+    double vel = rev ? -speed : speed;
+    if (fabs(src - (s->last + s->vel)) > JUMP_TOL || (vel < 0) != (s->vel < 0)) sc_jump(s, att);
     loop_at(buf, ls, le, xf, src, l, r);
-    if (s->xleft > 0) {
-        float ol, orr, wo = (float)s->xleft / CD_FADE;
-        raw_at(buf, len, s->xpos, &ol, &orr);
-        *l = *l * (1 - wo) + ol * wo; *r = *r * (1 - wo) + orr * wo;
-        s->xpos += speed; s->xleft--;
+    float g = sc_att_step(s, att);
+    *l *= g; *r *= g;
+    for (int i = 0; i < SC_VOICES; i++) {
+        ScFade *v = &s->fade[i];
+        if (v->left <= 0) continue;
+        float w = v->g0 * smooth01((float)v->left / v->len), ol, orr;
+        loop_at(buf, ls, le, xf, wrap(v->pos, ls, L), &ol, &orr);
+        *l += ol * w; *r += orr * w;
+        v->pos += v->vel; v->left--;
     }
-    *l *= s->env; *r *= s->env;
-    s->last = src; s->active = 1;
+    float ge = smooth01(s->env);   /* the gate on the same curve: no corner where it closes */
+    *l *= ge; *r *= ge;
+    s->last = src; s->vel = vel; s->active = 1;
 }
 
 /* --------------------------------------------------- master scatter */
 
-_Static_assert(P_MSC_EVOLVE - P_MSC_MODE == P_SC_EVOLVE - P_SC_MODE, "master scatter params in a track's order");
+_Static_assert(P_MSC_ATTACK - P_MSC_MODE == P_SC_ATTACK - P_SC_MODE, "master scatter params in a track's order");
 
 void msc_params(const float *p, float *tp)
 {
     eng_default_track(tp);
-    for (int i = 0; i <= P_SC_EVOLVE - P_SC_MODE; i++) tp[P_SC_MODE + i] = p[P_MSC_MODE + i];
+    for (int i = 0; i <= P_SC_ATTACK - P_SC_MODE; i++) tp[P_SC_MODE + i] = p[P_MSC_MODE + i];
 }
 
 static inline void ring_at(const float *ring, double pos, float *l, float *r)
@@ -809,19 +866,23 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
     int frozen = mode_on && p[P_MSC_FREEZE] >= 0.5f;
     float fb = mode_on ? (frozen ? 1.f : clampf(p[P_MSC_FB], 0.f, 0.97f)) : 0.f;
     Scatter *s = &m->s;
-    if (!mode_on && s->active && s->xleft == 0 && s->env >= 1.f && s->last + 1 >= (double)F0 && s->last + 1 <= (double)F0 + 0.5) {
+    int fading = 0;
+    for (int v = 0; v < SC_VOICES; v++) fading |= s->fade[v].left > 0;
+    if (!mode_on && s->active && !fading && s->att >= 1.f && s->env >= 1.f && s->last + 1 >= (double)F0 && s->last + 1 <= (double)F0 + 0.5) {
         /* off: only keep the mix */
         for (int i = 0; i < n; i++) {
             uint32_t w = (uint32_t)((F0 + i) & (MSC_RING - 1)) * 2;
             m->ring[w] = m->yring[w] = buf[2 * i]; m->ring[w + 1] = m->yring[w + 1] = buf[2 * i + 1];
         }
-        s->last = (double)(F0 + n - 1); m->pos_ago = -1;
+        s->last = (double)(F0 + n - 1); s->vel = 1; m->pos_ago = -1;
         return;
     }
+    if (!s->active) { s->vel = 1; s->att = 1.f; s->env = 1.f; memset(s->fade, 0, sizeof s->fade); }
+    int att = sc_attack_frames(tp);
     double spbf = sc_bar_stepsf(tp, beats), SL = cyc / spbf;
     int nb = sc_bar_steps(tp, beats);
     float gate = clampf(tp[P_SC_GATE], 0.05f, 1.f);
-    const float ramp = 1.f / (CD_SR * 0.002f);
+    const float down = 1.f / (CD_SR * 0.002f), up = 1.f / att;
     for (int i = 0; i < n; i++) {
         uint64_t F = F0 + i;
         uint32_t w = (uint32_t)(F & (MSC_RING - 1)) * 2;
@@ -834,7 +895,7 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
             xl = xl * (1 - fb) + yl * fb; xr = xr * (1 - fb) + yr * fb;
         }
         m->ring[w] = xl; m->ring[w + 1] = xr;
-        double src = (double)F;
+        double src = (double)F, vel = 1;
         float target = 1.f;
         if (mode_on && run[i]) {
             /* a quarter frame on, so a frame on a bar line is in the new bar
@@ -855,24 +916,32 @@ static void msc_block(MScat *m, const float *p, int beats, float *buf, const dou
             if (src < (double)first) src = (double)F;                 /* nothing that long ago yet */
             double prog = f2 / piece;
             target = !mute && (gate >= 0.999f || prog < gate) ? 1.f : 0.f;
+            if (rev && src < (double)F) vel = -1;
             m->g = g;
         }
-        if (s->env < target) { s->env += ramp; if (s->env > target) s->env = target; }
-        else if (s->env > target) { s->env -= ramp; if (s->env < target) s->env = target; }
-        double expect = s->active ? s->last + 1 : src;
-        if (fabs(src - expect) > JUMP_TOL) { s->xpos = expect; s->xleft = CD_FADE; }
+        if (s->env < target) { s->env += up; if (s->env > target) s->env = target; }
+        else if (s->env > target) { s->env -= down; if (s->env < target) s->env = target; }
+        double expect = s->active ? s->last + s->vel : src;
+        if (fabs(src - expect) > JUMP_TOL || (s->active && (vel < 0) != (s->vel < 0))) sc_jump(s, att);
         float l, r;
         ring_at(m->ring, src, &l, &r);
-        if (s->xleft > 0) {
-            float ol, orr, wo = (float)s->xleft / CD_FADE;
-            ring_at(m->ring, s->xpos, &ol, &orr);
-            l = l * (1 - wo) + ol * wo; r = r * (1 - wo) + orr * wo;
-            s->xpos += 1; s->xleft--;
+        float ga = sc_att_step(s, att);
+        l *= ga; r *= ga;
+        for (int v = 0; v < SC_VOICES; v++) {
+            ScFade *fv = &s->fade[v];
+            if (fv->left <= 0) continue;
+            /* never ahead of what has come in, nor further back than the ring holds */
+            double q = fv->pos > (double)F ? (double)F : fv->pos < (double)first ? (double)first : fv->pos;
+            float wv = fv->g0 * smooth01((float)fv->left / fv->len), ol, orr;
+            ring_at(m->ring, q, &ol, &orr);
+            l += ol * wv; r += orr * wv;
+            fv->pos += fv->vel; fv->left--;
         }
-        l *= s->env; r *= s->env;
+        float ge = smooth01(s->env);
+        l *= ge; r *= ge;
         m->yring[w] = l; m->yring[w + 1] = r;
         buf[2 * i] = l; buf[2 * i + 1] = r;
-        s->last = src; s->active = 1;
+        s->last = src; s->vel = vel; s->active = 1;
     }
     m->pos_ago = mode_on ? (int)((double)(F0 + n - 1) - s->last) : -1;
 }
@@ -1264,7 +1333,7 @@ void eng_render(Engine *e, float *out, int frames)
                     t->xleft = 0;
                 } else {
                     /* back from scatter: fade from where it was reading */
-                    if (t->sc.active) { t->sc.active = 0; start_jump(t, t->sc.last + c->speed); }
+                    if (t->sc.active) { t->sc.active = 0; start_jump(t, t->sc.last + t->sc.vel); }
                     loop_at(t->buf, ls, le, xf, t->pos, &dl, &dr);
                     if (t->xleft > 0) {
                         /* a jump: the old playhead fades out under the new one */

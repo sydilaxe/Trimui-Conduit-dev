@@ -300,6 +300,12 @@ window counts as one bar.
 Then:
 
 - **Gate:** how much of each slice (or repeat) sounds; lower is choppier.
+- **Attack:** how a slice comes in where Scatter cuts to it (another slice,
+  a repeat, backwards, a grain, after the gate). The slice that was playing
+  fades out from exactly where it was. At the default of 3 ms that only
+  takes the click off the cut. Up to 20 ms the cuts are softer. Longer than
+  that, each cut swells in (up to 100 ms), with the old slice gone within
+  10 ms.
 - **Pattern length:** the random choices (which slice, how many repeats,
   and the steps themselves with *Random*) repeat after 1, 2, 4 or 8 bars.
 - **Evolve:** off, the pattern repeats exactly. Turned up, that share of
@@ -309,7 +315,9 @@ Then:
 - **Variation:** other random choices with the same settings (SELECT + R1
   steps to the next). The same variation is always the same pattern.
 
-Jumps are crossfaded and the gate fades in 2 ms, so nothing clicks. Overdubs
+Every cut fades on a smooth curve: the slice before plays on, the way it
+was going, as it fades out under the new one (over Attack). The gate opens
+over Attack and closes in 2 ms, so nothing clicks. Overdubs
 still go into the loop in order, and Scatter only changes what's heard. On the
 other tabs the lane shows the slices as ticks along its bottom and where
 Scatter reads as a yellow line. The saved mix and Resample include the

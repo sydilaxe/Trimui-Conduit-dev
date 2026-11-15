@@ -98,6 +98,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_SC_STEPS]   = { "Steps", 0, 64, 1, 4, K_INT, 0 },
     [P_SC_ROT]     = { "Rotate", 0, 63, 1, 4, K_INT, 0 },
     [P_SC_EVOLVE]  = { "Evolve", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_SC_ATTACK]  = { "Slice attack", 1, 100, 1, 10, K_MS, 0 },
     [P_MASTER]     = { "Master volume", 0, 1.5f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MONITOR]    = { "Input monitor", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
     [P_FILT_MODE]  = { "Filter", 0, 3, 1, 1, K_ENUM, L_FILT },
@@ -148,6 +149,7 @@ static const ParamDesc PD[P_COUNT] = {
     [P_MSC_STEPS]  = { "Master steps", 0, 64, 1, 4, K_INT, 0 },
     [P_MSC_ROT]    = { "Master rotate", 0, 63, 1, 4, K_INT, 0 },
     [P_MSC_EVOLVE] = { "Master evolve", 0, 1, 0.05f, 0.25f, K_PCT, 0 },
+    [P_MSC_ATTACK] = { "Master slice attack", 1, 100, 1, 10, K_MS, 0 },
     [P_MSC_FB]     = { "Master feedback", 0, 0.95f, 0.05f, 0.25f, K_PCT, 0 },
     [P_MSC_FREEZE] = { "Master freeze", 0, 1, 1, 1, K_ENUM, L_ONOFF },
     [P_CLOCK]      = { "Sync to", 0, 2, 1, 1, K_ENUM, L_CLOCK },
@@ -167,7 +169,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_PAN] = "pan", [P_MUTE] = "mute", [P_FX_SEND] = "fx_send", [P_VERB_SEND] = "reverb_send", [P_SYNC] = "length",
     [P_SC_MODE] = "scatter", [P_SC_DIV] = "scatter_slice_size", [P_SC_AMOUNT] = "scatter_amount", [P_SC_GATE] = "scatter_gate",
     [P_SC_BARS] = "scatter_bars", [P_SC_VAR] = "scatter_variation", [P_SC_TRIG] = "scatter_picks",
-    [P_SC_HITS] = "scatter_hits", [P_SC_STEPS] = "scatter_steps", [P_SC_ROT] = "scatter_rotate", [P_SC_EVOLVE] = "scatter_evolve", [P_MASTER] = "master", [P_MONITOR] = "monitor",
+    [P_SC_HITS] = "scatter_hits", [P_SC_STEPS] = "scatter_steps", [P_SC_ROT] = "scatter_rotate", [P_SC_EVOLVE] = "scatter_evolve", [P_SC_ATTACK] = "scatter_attack_ms", [P_MASTER] = "master", [P_MONITOR] = "monitor",
     [P_FILT_MODE] = "filter", [P_CUTOFF] = "cutoff", [P_RESO] = "resonance", [P_DRIVE] = "drive",
     [P_BITS] = "bits", [P_DOWNS] = "downsample", [P_DLY_SYNC] = "delay_sync", [P_DLY_TIME] = "delay_time",
     [P_DLY_FB] = "delay_feedback", [P_DLY_MIX] = "delay_mix", [P_PINGPONG] = "pingpong", [P_DLY_TONE] = "delay_tone", [P_DLY_LOWCUT] = "delay_lowcut", [P_DLY_WOW] = "delay_wow",
@@ -182,7 +184,7 @@ static const char *const PKEY[P_COUNT] = {
     [P_MSC_MODE] = "master_scatter", [P_MSC_DIV] = "master_scatter_slice_size", [P_MSC_AMOUNT] = "master_scatter_amount",
     [P_MSC_GATE] = "master_scatter_gate", [P_MSC_BARS] = "master_scatter_bars", [P_MSC_VAR] = "master_scatter_variation",
     [P_MSC_TRIG] = "master_scatter_picks", [P_MSC_HITS] = "master_scatter_hits", [P_MSC_STEPS] = "master_scatter_steps",
-    [P_MSC_ROT] = "master_scatter_rotate", [P_MSC_EVOLVE] = "master_scatter_evolve",
+    [P_MSC_ROT] = "master_scatter_rotate", [P_MSC_EVOLVE] = "master_scatter_evolve", [P_MSC_ATTACK] = "master_scatter_attack_ms",
     [P_MSC_FB] = "master_scatter_feedback", [P_MSC_FREEZE] = "master_scatter_freeze", [P_CLOCK] = "sync_to",
     [P_REC_WAIT] = "rec_wait", [P_BEATS] = "beats_per_bar", [P_CLOCK_OFS] = "clock_offset_ms",
     [P_CLOCK_START] = "midi_start_stop", [P_CLOCK_OUT] = "midi_clock_send",
@@ -196,9 +198,9 @@ enum { PG_TRACK, PG_SEQ, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "SEQ", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
 static int PAGE_ROWS[PG_N][40] = {
     { P_LOOP_START, P_LOOP_END, P_PITCH, P_FINE, P_REVERSE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_MUTE, P_SYNC, P_DECAY, P_DECAY_MODE, ROW_END },
-    { ROW_H_TSC, P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
+    { ROW_H_TSC, P_SC_MODE, P_SC_DIV, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT, P_SC_AMOUNT, P_SC_GATE, P_SC_ATTACK, P_SC_BARS, P_SC_EVOLVE, P_SC_VAR,
       ROW_H_MSC, P_MSC_MODE, P_MSC_FB, P_MSC_FREEZE, P_MSC_DIV, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT, P_MSC_AMOUNT,
-      P_MSC_GATE, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
+      P_MSC_GATE, P_MSC_ATTACK, P_MSC_BARS, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
     { ROW_H_TONE, P_DRIVE, P_BITS, P_DOWNS, P_FILT_MODE, P_CUTOFF, P_RESO,
       ROW_H_DLY, P_DLY_MIX, P_DLY_SYNC, P_DLY_TIME, P_DLY_FB, P_PINGPONG, P_DLY_TONE, P_DLY_LOWCUT, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
@@ -225,10 +227,10 @@ static const int GRID[PG_N][48] = {
                    GCOL(GT_LEVEL), GPAIR, P_VOLUME, P_PAN, P_MUTE,
                    GCOL(GT_SENDS), P_FX_SEND, P_VERB_SEND, ROW_END },
     [PG_SEQ] = { GCOL(GT_TSC_PAT), GPAIR, P_SC_MODE, P_SC_DIV, P_SC_TRIG, GPAIR, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
-                 GCOL(GT_TSC_SHAPE), GPAIR, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, GPAIR, P_SC_EVOLVE, P_SC_VAR,
+                 GCOL(GT_TSC_SHAPE), GPAIR, P_SC_AMOUNT, P_SC_GATE, GPAIR, P_SC_ATTACK, P_SC_BARS, GPAIR, P_SC_EVOLVE, P_SC_VAR,
                  GCOL(GT_MSC_PAT), GPAIR, P_MSC_MODE, P_MSC_DIV, P_MSC_TRIG, GPAIR, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
-                 GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, GPAIR, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS,
-                 GPAIR, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
+                 GCOL(GT_MSC_SHAPE), GPAIR, P_MSC_FB, P_MSC_FREEZE, GPAIR, P_MSC_AMOUNT, P_MSC_GATE,
+                 GPAIR, P_MSC_ATTACK, P_MSC_BARS, GPAIR, P_MSC_EVOLVE, P_MSC_VAR, ROW_END },
     [PG_FX] = { GCOL(GT_TONE), P_DRIVE, GPAIR, P_BITS, P_DOWNS, P_FILT_MODE, GPAIR, P_CUTOFF, P_RESO,
                 GCOL(GT_DLY), GPAIR, P_DLY_MIX, P_DLY_FB, P_DLY_SYNC, GPAIR, P_DLY_TIME, P_PINGPONG,
                 GCOL(GT_DLY2), GPAIR, P_DLY_TONE, P_DLY_LOWCUT, GPAIR, P_DLY_WOW, P_DLY_WOW_RATE, P_DLY_DRIVE,
@@ -481,10 +483,10 @@ static const int PERSIST[] = { P_MASTER, P_MONITOR, P_IN_GAIN, P_IN_CHAN, P_OUT_
                                P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
                                P_IN_FX_SEND, P_IN_VERB_SEND, P_IN_PRINT,
                                P_MSC_DIV, P_MSC_AMOUNT, P_MSC_GATE, P_MSC_BARS, P_MSC_TRIG, P_MSC_HITS, P_MSC_STEPS, P_MSC_ROT,
-                               P_MSC_EVOLVE, P_MSC_FB };
+                               P_MSC_EVOLVE, P_MSC_ATTACK, P_MSC_FB };
 static const int PERSIST_T[] = { P_DECAY, P_DECAY_MODE, P_VOLUME, P_PAN, P_FX_SEND, P_VERB_SEND, P_SYNC,
                                   P_SC_DIV, P_SC_AMOUNT, P_SC_GATE, P_SC_BARS, P_SC_TRIG, P_SC_HITS, P_SC_STEPS, P_SC_ROT,
-                                  P_SC_EVOLVE };
+                                  P_SC_EVOLVE, P_SC_ATTACK };
 #define NPERSIST (int)(sizeof PERSIST / sizeof PERSIST[0])
 #define NPERSIST_T (int)(sizeof PERSIST_T / sizeof PERSIST_T[0])
 
@@ -1888,8 +1890,8 @@ static void meter(int x, int y, int w, const char *label, float pk)
  * which of them it is (-1: not a scatter setting) */
 static int sc_view(int id, float *tp)
 {
-    if (id >= P_SC_MODE && id <= P_SC_EVOLVE) { memcpy(tp, trk(G.sel)->p, sizeof(float) * P_TRACK_N); return id; }
-    if (id >= P_MSC_MODE && id <= P_MSC_EVOLVE) { msc_params(G.eng.p, tp); return P_SC_MODE + (id - P_MSC_MODE); }
+    if (id >= P_SC_MODE && id <= P_SC_ATTACK) { memcpy(tp, trk(G.sel)->p, sizeof(float) * P_TRACK_N); return id; }
+    if (id >= P_MSC_MODE && id <= P_MSC_ATTACK) { msc_params(G.eng.p, tp); return P_SC_MODE + (id - P_MSC_MODE); }
     return -1;
 }
 
@@ -1944,6 +1946,8 @@ static void value_str(int id, char *o, size_t sz)
         if (id == P_DUB_ALIGN) snprintf(o, sz, "%+.0f ms%s", v, v == 0 ? "  (auto)" : v > 0 ? "  (earlier)" : "  (later)");
         else if (id == P_VERB_PRE) snprintf(o, sz, v < 0.5f ? "Off" : "%.0f ms", v);
         else if (id == P_CLOCK_OFS) snprintf(o, sz, "%+.0f ms%s", v, v == 0 ? "" : v > 0 ? "  (loops earlier)" : "  (loops later)");
+        else if (sid == P_SC_ATTACK)
+            snprintf(o, sz, "%.0f ms%s", v, v <= 4 ? "  (takes the click off the cuts)" : v <= 20 ? "  (soft cuts)" : "  (each cut swells in)");
         else if (G.eng.p[P_DLY_SYNC] > 0.5f) snprintf(o, sz, "(synced)");
         else snprintf(o, sz, "%.0f ms", v);
         break;
@@ -2306,7 +2310,7 @@ static void grid_name(int id, char *o, size_t sz)
     static const struct { int id; const char *n; } ab[] = {
         { P_LOOP_START, "Start" }, { P_LOOP_END, "End" }, { P_FINE, "Fine" }, { P_DECAY, "Decay" }, { P_DECAY_MODE, "Mode" }, { P_REVERSE, "Rev" }, { P_VOLUME, "Vol" },
         { P_PINGPONG, "Ping" }, { P_DLY_MIX, "Mix" }, { P_SC_AMOUNT, "Amt" }, { P_MSC_AMOUNT, "Amt" },
-        { P_SC_EVOLVE, "Evolve" }, { P_IN_GAIN, "Gain" }, { P_MONITOR, "Monitor" }, { P_TRIGGER, "Trigger" }, { P_THRESH, "Thresh" },
+        { P_SC_EVOLVE, "Evolve" }, { P_SC_ATTACK, "Attack" }, { P_MSC_ATTACK, "Attack" }, { P_IN_GAIN, "Gain" }, { P_MONITOR, "Monitor" }, { P_TRIGGER, "Trigger" }, { P_THRESH, "Thresh" },
         { P_AUTOPLAY, "Auto loop" }, { P_IN_FX_SEND, "FX" }, { P_IN_VERB_SEND, "Reverb" }, { P_IN_PRINT, "Record" },
         { P_MASTER, "Master" }, { P_SAVE_FMT, "Save as" }, { P_IN_CHAN, "Channels" }, { P_OUT_MONO, "Output" }, { P_BEATS, "Beats" }, { P_CLOCK_OFS, "Offset" },
         { P_CLOCK_START, "Start in" }, { P_CLOCK_OUT, "Clock out" }, { P_START_OUT, "Start out" },
