@@ -1612,9 +1612,117 @@ static void test_channels(void)
         }
 }
 
+/* the sharpest turn in n frames (the second difference), carried across blocks in pv */
+static float max_turn(const float *o, int n, float pv[2][2])
+{
+    float m = 0;
+    for (int i = 0; i < n; i++)
+        for (int c = 0; c < 2; c++) {
+            float x = o[2 * i + c], d = fabsf(x - 2 * pv[c][1] + pv[c][0]);
+            pv[c][0] = pv[c][1]; pv[c][1] = x;
+            if (d > m) m = d;
+        }
+    return m;
+}
+
+/* render frames and give the sharpest turn after the first skip frames */
+static float turn_run(Engine *e, int frames, int skip)
+{
+    float in[512 * 2] = { 0 }, out[512 * 2], pv[2][2] = { { 0, 0 }, { 0, 0 } }, worst = 0;
+    for (int done = 0; done < frames; done += 512) {
+        eng_push_input(e, in, 512); eng_render(e, out, 512);
+        float m = max_turn(out, 512, pv);
+        if (done >= skip && m > worst) worst = m;
+    }
+    return worst;
+}
+
+/* Scatter's cuts are smooth in every mode and slice size, on a track and on
+ * the master: a sine through them turns no more sharply than a few times the
+ * sine itself (a pop: a jump, or a turn backwards on the spot, is 10-500
+ * times). Slice attack makes the cuts softer still. */
+static void test_scatter_clicks(void)
+{
+    char msg[200];
+    static const int divs[] = { SC_SZ_4, SC_SZ_8T, SC_SZ_16, SC_SZ_32, SC_SZ_64 };
+    const float plain = 0.5f * powf(2 * (float)M_PI * 220 / CD_SR, 2);   /* the sine's own sharpest turn */
+    float worst = 0; int wm = 0, wd = 0;
+    for (int mode = SC_SHUFFLE; mode < SC_N; mode++)
+        for (size_t d = 0; d < sizeof divs / sizeof divs[0]; d++) {
+            Engine *e = calloc(1, sizeof *e); eng_init(e, 4);
+            int n = 2 * CD_SR;
+            float *b = malloc(sizeof(float) * 2 * n);
+            fill_sine(b, n, 220, 0.5f);
+            eng_set_buffer(e, 0, b, n); free(b);
+            Track *t = &e->trk[0];
+            t->p[P_SYNC] = SYNC_FREE; t->p[P_FX_SEND] = 0;
+            t->p[P_SC_MODE] = mode; t->p[P_SC_DIV] = divs[d]; t->p[P_SC_TRIG] = SC_TRIG_RANDOM; t->p[P_SC_AMOUNT] = 1.f;
+            float pk; run_silence(e, 8192, &pk);
+            eng_play_toggle(e, 0);
+            float w = turn_run(e, 4 * CD_SR, 16384);
+            if (w > worst) { worst = w; wm = mode; wd = divs[d]; }
+            eng_free(e); free(e);
+        }
+    snprintf(msg, sizeof msg, "track scatter: no pops in any mode or slice size (sharpest turn %.1fx the sine's, mode %d, size %d)",
+             worst / plain, wm, wd);
+    T(worst < 6 * plain, msg);
+
+    /* the master: the mix of a synced loop, through each mode */
+    worst = 0; wm = 0;
+    for (int mode = SC_SHUFFLE; mode < SC_N; mode++) {
+        Engine *e = calloc(1, sizeof *e); eng_init(e, 4);
+        int n = 48000 + CD_XFADE;
+        float *b = malloc(sizeof(float) * 2 * n);
+        fill_sine(b, n, 220, 0.5f);
+        eng_set_buffer(e, 0, b, n); free(b);
+        e->trk[0].p[P_FX_SEND] = 0;
+        eng_play_toggle(e, 0);
+        float ms, en; double enb;
+        play_bar(e, 2 * 48000, &ms, &enb); (void)en;
+        e->p[P_MSC_MODE] = mode; e->p[P_MSC_DIV] = SC_SZ_16; e->p[P_MSC_TRIG] = SC_TRIG_RANDOM; e->p[P_MSC_AMOUNT] = 1.f;
+        float w = turn_run(e, 4 * 48000, 48000);
+        if (w > worst) { worst = w; wm = mode; }
+        eng_free(e); free(e);
+    }
+    snprintf(msg, sizeof msg, "master scatter: no pops in any mode (sharpest turn %.1fx the sine's, mode %d)", worst / plain, wm);
+    T(worst < 6 * plain, msg);
+
+    /* a long Slice attack: a cut swells in (quiet just after it, full by the end of the attack) */
+    {
+        Engine *e = calloc(1, sizeof *e); eng_init(e, 4);
+        int n = 2 * CD_SR;
+        float *b = malloc(sizeof(float) * 2 * n);
+        fill_sine(b, n, 220, 0.5f);
+        eng_set_buffer(e, 0, b, n); free(b);
+        Track *t = &e->trk[0];
+        t->p[P_SYNC] = SYNC_FREE; t->p[P_FX_SEND] = 0; t->p[P_VOLUME] = 1.f;
+        /* every step reversed: each starts with a cut */
+        t->p[P_SC_MODE] = SC_REVERSE; t->p[P_SC_DIV] = SC_SZ_4; t->p[P_SC_TRIG] = SC_TRIG_RANDOM; t->p[P_SC_AMOUNT] = 1.f;
+        t->p[P_SC_ATTACK] = 50.f;
+        float pk; run_silence(e, 8192, &pk);
+        eng_play_toggle(e, 0);
+        run_silence(e, 4096, &pk);
+        /* wait for the next step's start (4 slices in the 2 s window: one every ~24000 frames) */
+        float in[64 * 2] = { 0 }, out[64 * 2];
+        int guard = 0, st0 = t->sc.step;
+        while (t->sc.step == st0 && guard++ < 30000) { eng_push_input(e, in, 1); eng_render(e, out, 1); }
+        float early = 0, late = 0;
+        for (int i = 0; i < 4800; i++) {   /* 100 ms after the cut */
+            eng_push_input(e, in, 1); eng_render(e, out, 1);
+            float a = fabsf(out[0]);
+            if (i >= 480 && i < 720 && a > early) early = a;        /* 10-15 ms in: swelling */
+            if (i >= 3600 && a > late) late = a;                    /* 75-100 ms: full */
+        }
+        snprintf(msg, sizeof msg, "Slice attack 50 ms: a cut swells in (peak %.2f at 10-15 ms, %.2f after 75 ms)", early, late);
+        T(early < 0.5f * late && late > 0.3f, msg);
+        eng_free(e); free(e);
+    }
+}
+
 int main(void)
 {
     test_channels();
+    test_scatter_clicks();
     test_rate_mismatch();
     test_xy_gain();
     test_live_fx();
