@@ -463,7 +463,7 @@ static unsigned long rd32(const unsigned char *p)
 /* files the user owns: an update never writes them */
 static int keep_users(const char *rel)
 {
-    return !strcmp(rel, "conduit.cfg") || !strcmp(rel, "log.txt") || !strcmp(rel, "log.1.txt") ||
+    return !strcmp(rel, "conduit.cfg") || !strcmp(rel, "audio.txt") || !strcmp(rel, "log.txt") || !strcmp(rel, "log.1.txt") ||
            !strcmp(rel, "log.2.txt") || !strcmp(rel, "sysinfo.txt") || !strcmp(rel, "conduit_diag.txt") ||
            !strncmp(rel, "recordings/", 11);
 }

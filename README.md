@@ -15,12 +15,17 @@ built for **MustardOS (muOS)**, without Python or extra libraries.
 
 ## Features
 
-- **Input and output:** any device SDL sees. A USB interface is picked
-  automatically for both, so the mix plays through it and the speakers stay
-  silent, and hot-plugging is followed: plug one in and the sound moves to
-  it, unplug it and it comes back to the speakers. **IO → Input device** and
-  **Output device** pick another (*Auto* is USB first, else the default). 48 kHz stereo float internally;
-  SDL converts from whatever the interface runs at (mono, 44.1 kHz, ...).
+- **Input and output:** through **brickio**, the TrimUI apps' shared USB audio (as in TrimFX). A USB
+  interface is picked automatically for both and opened straight through ALSA, with no ~90 ms
+  system mixer in the way: one interface both ways runs as **DUPLEX** (one clock, sample for
+  sample), 24-bit stays 24-bit, and the audio threads run at real-time priority. Hot-plugging is
+  followed: plug one in and the sound moves to it, unplug it and it comes back to the speakers.
+  **IO → Input device** and **Output device** pick another (*Auto* is USB first, else the
+  default), **IO → Buffer** sets the latency (*Auto* starts small and grows a step if the sound
+  keeps dropping out), and **IO → Latency test** measures the real round trip with a cable from
+  the output to the input. These choices are kept in `audio.txt`. 48 kHz stereo float internally.
+  `audio_path=sdl` in `conduit.cfg` goes back to the old SDL path (see
+  [Troubleshooting](#troubleshooting)).
   **IO → Channels** takes the input as stereo, summed to mono, or from one
   side only; **IO → Output** plays the mix in stereo or mono.
 - **Scatter and SEQ:** cut a track's loop into slices on the beat (from a
@@ -532,7 +537,7 @@ starts (once Wi-Fi is up) it asks GitHub for this repo's latest release, and tri
 five times in all, if it can't reach it. When the release is newer, a prompt covers the screen: **A**
 downloads `Conduit-mustardos.muxapp`, puts the new files in place and restarts Conduit; **B** (or MENU)
 closes it, and it is offered again next time. The sound keeps going under the prompt. Your settings
-(`conduit.cfg`), your recordings and the logs are never touched; files that haven't changed aren't
+(`conduit.cfg`, `audio.txt`), your recordings and the logs are never touched; files that haven't changed aren't
 written; and every new file is written and checked beside the old one before any is replaced, so a
 failed or broken download changes nothing. `log.txt` says what was found (`update: the latest release
 is v…`). `CONDUIT_UPDATE=0` in `launch.sh` turns the check off (an update replaces `launch.sh`, so set
@@ -567,7 +572,8 @@ Each line in `log.txt` starts with the seconds since Conduit started and a tag:
 | Tag | When | What |
 |---|---|---|
 | `SYS` | at start | The firmware, board, build, processor, memory, kernel, SDL and its drivers. |
-| `AUDIO` | as it happens | A sound device opened, closed, came or went. The output stopping (silence) and coming back. |
+| `AUDIO` | as it happens | The audio path (brickio or SDL). A sound device opened, closed, came or went, and what brickio decided: DIRECT or the shared path, DUPLEX and how much it really holds (`DUPLEX holds N frames out and M in`: the round trip, the interface aside), the buffer growing, a device reopened. The output stopping (silence) and coming back. |
+| `LATENCY` | after IO → Latency test | The round trip measured through a cable from the output to the input, the interface included. |
 | `STAT` | every 10 s | Audio load (how much of each buffer's time the sound took to make), dropouts, late callbacks, clicks, the screen's frame rate, the processor's clock and temperature. |
 | `PROC` | every 10 s | Processor time for the app and its busiest threads, memory, page faults. |
 | `ENGINE` | every 10 s | Input level, output level, the input FIFO (underruns mean the interface delivered unevenly), the input's real clock, tempo and sync, MIDI devices, the USB link, each track's state. |
@@ -595,8 +601,12 @@ file, so set them again afterwards):
 
 - `CONDUIT_LOG=2`: a status line every second, and every button press.
   `CONDUIT_LOG=0` turns the log off; crashes are still logged.
-- `CONDUIT_BUFFER=1024`: frames per sound buffer (512 by default). Bigger
-  rides out dropouts; the `HINT` lines say when to try it.
+- `CONDUIT_BUFFER=1024`: frames per sound buffer (**IO → Buffer** sets it too, and keeps it in
+  `audio.txt` for each interface). Bigger rides out dropouts; the `HINT` lines say when to try it.
+- `audio_path=sdl` in `conduit.cfg` (with the app closed), or `CONDUIT_AUDIO_PATH=sdl` in
+  `launch.sh`: the sound goes through SDL's own devices, as before brickio (512 frames, through the
+  system mixer, `in_device` and `out_device` in `conduit.cfg`). For comparing, or if an interface
+  misbehaves with brickio; `audio_path=brickio` goes back.
 - `CONDUIT_SYSINFO=0`: no `sysinfo.txt`.
 
 `log.txt` stops adding routine lines at 24 MB and stops entirely at 32 MB.
@@ -700,6 +710,8 @@ src/midiverb2.c     MidiVerb II programs 45 and 49, exact (from midiverb_emulato
 src/bloom.c         the adjustable Bloom (the same design in floating point)
 src/wav.c           WAV writer (fsync) and reader (+ resampler)
 src/font_data.h     embedded DejaVu Sans Mono glyphs (make font: tools/genfont.py)
+lib/brickio/        the TrimUI apps' shared USB audio, from sydilaxe/Brickio-dev (BRICKIO_VERSION says which):
+                    usbaudio.c, duplex.c and aring.c are built; Conduit keeps its own MIDI and clock link
 Apps/Conduit/       the app folder: launch.sh, conduit_diag.sh, sysinfo.sh
 mustardos/          MustardOS: mux_launch.sh, wake_screen.sh, the list glyph
 third_party/        SDL2 headers for the cross build

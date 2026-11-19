@@ -21,12 +21,15 @@ APPDIR   := Apps/Conduit
 SDL_INC  := third_party/SDL2-2.30.9-headers
 SRC      := src/main.c src/dsp.c src/wav.c src/midi.c src/link.c src/bloom.c src/midiverb2.c src/verb.c \
             src/net.c src/update.c src/applog.c
-HDR      := $(wildcard src/*.h)
+# lib/brickio: the TrimUI apps' shared USB audio (copied from sydilaxe/Brickio-dev, see lib/brickio/BRICKIO_VERSION).
+# Only its audio is used here: Conduit keeps its own MIDI (src/midi.c) and clock link (src/link.c)
+BRICKIO  := lib/brickio/usbaudio.c lib/brickio/aring.c lib/brickio/duplex.c
+HDR      := $(wildcard src/*.h lib/brickio/*.h)
 VERSION  ?= $(shell sed -n 's/^\#define CONDUIT_VERSION "\([^"]*\)".*/\1/p' src/main.c)
 
 WARN     := -Wall -Wextra -Wno-unused-parameter
 CFLAGS   ?= -O2
-CFLAGS   += -std=gnu11 $(WARN) -ffast-math -DCONDUIT_VERSION='"$(VERSION)"'
+CFLAGS   += -std=gnu11 $(WARN) -ffast-math -DCONDUIT_VERSION='"$(VERSION)"' -Ilib/brickio
 
 # changes only when the version does, so a new VERSION= rebuilds what has it compiled in
 build/version: FORCE
@@ -60,46 +63,60 @@ HOST_CC  ?= cc
 
 # --- the TrimUI build (CONDUIT_TRIMUI: it checks GitHub for updates by default)
 DEV_CC   = $(ZIG) cc -target $(ZTARGET) -mcpu=$(CPU)
-DEV_OBJ  := $(patsubst src/%.c,build/trimui/%.o,$(SRC))
+DEV_OBJ  := $(patsubst src/%.c,build/trimui/%.o,$(SRC)) $(patsubst lib/brickio/%.c,build/trimui/brickio/%.o,$(BRICKIO))
 
 all: build/trimui/$(APP)
 
 # conduit.debug: the same build unstripped, with its debug information, to read a CRASH in log.txt
 # (addr2line -f -e build/trimui/conduit.debug 0x<offset>); the package carries the stripped one
 build/trimui/$(APP): $(DEV_OBJ) build/sdl2/libSDL2-2.0.so.0 build/zig/libmbedtls.a
-	$(DEV_CC) -o $@.debug $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -Wl,--allow-shlib-undefined
-	$(DEV_CC) -o $@ $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -Wl,--allow-shlib-undefined -s
+	$(DEV_CC) -o $@.debug $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -ldl -Wl,--allow-shlib-undefined
+	$(DEV_CC) -o $@ $(DEV_OBJ) build/zig/libmbedtls.a build/sdl2/libSDL2-2.0.so.0 -lm -lpthread -ldl -Wl,--allow-shlib-undefined -s
 
 build/trimui/%.o: src/%.c $(HDR) build/version $(MBED_SRC) | build/trimui
 	$(DEV_CC) $(CFLAGS) -g -DCONDUIT_TRIMUI -I$(SDL_INC) -I$(MBED_DIR)/include -c -o $@ $<
+build/trimui/brickio/%.o: lib/brickio/%.c $(HDR) | build/trimui
+	@mkdir -p build/trimui/brickio
+	$(DEV_CC) $(CFLAGS) -Wno-format-truncation -g -I$(SDL_INC) -c -o $@ $<
 
 # a stand-in for the device's libSDL2-2.0.so.0, to link against (the firmware has the real one)
-build/sdl2/libSDL2-2.0.so.0: tools/mksdlstub.py $(SRC)
+build/sdl2/libSDL2-2.0.so.0: tools/mksdlstub.py $(SRC) $(BRICKIO)
 	@mkdir -p build/sdl2
-	python3 tools/mksdlstub.py build/sdl2/sdl2_stub.c $(SRC)
+	python3 tools/mksdlstub.py build/sdl2/sdl2_stub.c $(SRC) $(BRICKIO)
 	$(ZIG) cc -target $(ZTARGET) -shared -Wl,-soname,libSDL2-2.0.so.0 -o $@ build/sdl2/sdl2_stub.c
 
 # --- a desktop build, for trying it and for the end-to-end test
-HOST_OBJ := $(patsubst src/%.c,build/desktop/%.o,$(SRC))
+HOST_OBJ := $(patsubst src/%.c,build/desktop/%.o,$(SRC)) $(patsubst lib/brickio/%.c,build/desktop/brickio/%.o,$(BRICKIO))
 
 desktop: build/desktop/$(APP)
 
 build/desktop/$(APP): $(HOST_OBJ) build/host/libmbedtls.a
-	$(HOST_CC) -o $@ $(HOST_OBJ) build/host/libmbedtls.a $(shell sdl2-config --libs) -lpthread -lm
+	$(HOST_CC) -o $@ $(HOST_OBJ) build/host/libmbedtls.a $(shell sdl2-config --libs) -lpthread -lm -ldl
 
 build/desktop/%.o: src/%.c $(HDR) build/version $(MBED_SRC) | build/desktop
 	$(HOST_CC) $(CFLAGS) $(shell sdl2-config --cflags | sed 's|-I\([^ ]*\)/SDL2|-I\1|') -I$(MBED_DIR)/include -c -o $@ $<
+build/desktop/brickio/%.o: lib/brickio/%.c $(HDR) | build/desktop
+	@mkdir -p build/desktop/brickio
+	$(HOST_CC) $(CFLAGS) -Wno-format-truncation $(shell sdl2-config --cflags | sed 's|-I\([^ ]*\)/SDL2|-I\1|') -c -o $@ $<
 
 build/trimui build/desktop:
 	mkdir -p $@
 
 # --- tests (on this computer)
+build/test_aring: lib/brickio/tests/test_aring.c lib/brickio/aring.c lib/brickio/aring.h
+	@mkdir -p build
+	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ lib/brickio/tests/test_aring.c lib/brickio/aring.c -lm
+build/test_duplex: lib/brickio/tests/test_duplex.c lib/brickio/duplex.c lib/brickio/duplex.h
+	@mkdir -p build
+	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ lib/brickio/tests/test_duplex.c lib/brickio/duplex.c -ldl -lpthread
 build/test_dsp: tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/link.c src/link.h src/bloom.c src/midiverb2.c src/verb.c src/dsp.h src/wav.h src/midi.h src/bloom.h src/midiverb2.h src/verb.h
 	@mkdir -p build
 	$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -fsanitize=address,undefined -o $@ tests/test_dsp.c src/dsp.c src/wav.c src/midi.c src/link.c src/bloom.c src/midiverb2.c src/verb.c -lm -lpthread
 
-test: build/test_dsp
+test: build/test_dsp build/test_aring build/test_duplex
 	build/test_dsp
+	build/test_aring
+	build/test_duplex
 
 test-e2e: build/desktop/$(APP)
 	./tests/e2e.sh build/desktop/$(APP)

@@ -1,6 +1,7 @@
 build/
 Apps/Conduit/conduit
 Apps/Conduit/conduit.cfg
+Apps/Conduit/audio.txt
 Apps/Conduit/log.txt
 Apps/Conduit/conduit_diag.txt
 Apps/Conduit/recordings/*.wav

@@ -36,7 +36,7 @@ PY
 FEED=$!
 SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILEIN="$W/in.raw" SDL_DISKAUDIOFILE="$W/out.raw" \
 SDL_VIDEODRIVER=dummy CONDUIT_WINDOWED=1 CONDUIT_MIDI_DEV="$W/midi" \
-CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/conduit.cfg" CONDUIT_LOG=2 \
+CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/conduit.cfg" CONDUIT_AUDIO_TXT="$W/audio.txt" CONDUIT_LOG=2 \
   "$BIN" --selftest --shots "$W" 2>"$W/log.txt" || { cat "$W/log.txt"; kill $FEED 2>/dev/null; exit 1; }
 kill $FEED 2>/dev/null || true
 cat "$W/log.txt"
@@ -56,7 +56,7 @@ echo "ok   log.txt: every kind of line, stderr captured, takes and presses logge
 
 # a crash: the signal, where, a backtrace, and the exit a crash gives
 rc=0
-SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/crash.cfg" \
+SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/crash.cfg" CONDUIT_AUDIO_TXT="$W/crash_audio.txt" \
   "$BIN" --crash-test 2>"$W/crash.txt" || rc=$?
 cat "$W/crash.txt"
 test "$rc" = 139 || fail "the crash test exited $rc, not 139 (SIGSEGV)"
@@ -66,7 +66,7 @@ grep -Eq "#[0-9]+ binary \+ 0x" "$W/crash.txt" || fail "no backtrace into the bi
 echo "ok   a crash is logged: signal, address, what the app was doing, backtrace"
 
 # asked to close (MustardOS at shutdown): it closes as from the menu, saving its settings
-SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/term.cfg" \
+SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy CONDUIT_REC_DIR="$W/rec" CONDUIT_CFG="$W/term.cfg" CONDUIT_AUDIO_TXT="$W/term_audio.txt" \
   "$BIN" 2>"$W/term.txt" &
 P=$!
 sleep 3
