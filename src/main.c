@@ -11,6 +11,7 @@
 #include "net.h"
 #include "update.h"
 #include "applog.h"
+#include "usbaudio.h"   /* lib/brickio: the TrimUI apps' shared USB audio */
 
 #include <ctype.h>
 #include <dirent.h>
@@ -23,6 +24,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #define SW 1024
@@ -193,6 +195,7 @@ static const char *const PKEY[P_COUNT] = {
 
 enum { ROW_IN_DEV = -1, ROW_OUT_DEV = -2, ROW_FOLDER = -3, ROW_DIAG = -4, ROW_TEMPO = -5, ROW_MIDI_DEV = -6,
        ROW_H_TONE = -7, ROW_H_DLY = -8, ROW_H_VERB = -9, ROW_H_TSC = -10, ROW_H_MSC = -11,   /* section headings */
+       ROW_BUFFER = -12, ROW_LATENCY = -13,   /* brickio's buffer and its round-trip test */
        ROW_END = -100 };
 enum { PG_TRACK, PG_SEQ, PG_FX, PG_SYNC, PG_IO, PG_MIDI, PG_FILES, PG_N };
 static const char *const PAGE_NAME[PG_N] = { "TRACK", "SEQ", "EFFECTS", "SYNC", "IO", "MIDI", "FILES" };
@@ -206,7 +209,7 @@ static int PAGE_ROWS[PG_N][40] = {
       ROW_H_VERB, P_VERB_TYPE, P_VERB_LEVEL, P_VERB_TIME, P_VERB_PRE, P_VERB_SIZE, P_VERB_DAMP, P_VERB_DIFF, P_VERB_WIDTH, P_VERB_LOWCUT, P_VERB_HICUT,
       ROW_END },
     { P_CLOCK, P_REC_WAIT, P_BEATS, P_CLOCK_OFS, P_CLOCK_START, P_IN_DIV, P_CLOCK_OUT, P_START_OUT, P_OUT_DIV, ROW_TEMPO, ROW_MIDI_DEV, ROW_END },
-    { ROW_IN_DEV, ROW_OUT_DEV, P_IN_GAIN, P_IN_CHAN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
+    { ROW_IN_DEV, ROW_OUT_DEV, ROW_BUFFER, ROW_LATENCY, P_IN_GAIN, P_IN_CHAN, P_MONITOR, P_IN_VERB_SEND, P_IN_FX_SEND, P_IN_PRINT, P_MASTER, P_OUT_MONO, P_TRIGGER, P_THRESH, P_AUTOPLAY, P_SAVE_FMT, P_DUB_ALIGN, ROW_FOLDER, ROW_DIAG, ROW_END },
     { ROW_END },
     { ROW_END },
 };
@@ -241,7 +244,7 @@ static const int GRID[PG_N][48] = {
                   GCOL(GT_MIDI_OUT), GPAIR, P_CLOCK_OUT, P_START_OUT, P_OUT_DIV, ROW_END },
     [PG_IO] = { GCOL(GT_INPUT), GPAIR, P_IN_GAIN, P_MONITOR, P_IN_CHAN, GPAIR, P_TRIGGER, P_THRESH, GPAIR, P_AUTOPLAY, P_DUB_ALIGN,
                 GCOL(GT_LIVE), GPAIR, P_IN_FX_SEND, P_IN_VERB_SEND, GPAIR, P_IN_PRINT, P_MASTER, GPAIR, P_OUT_MONO, P_SAVE_FMT,
-                GCOL(GT_DEVS), ROW_IN_DEV, ROW_OUT_DEV, ROW_FOLDER, ROW_DIAG, ROW_END },
+                GCOL(GT_DEVS), ROW_IN_DEV, ROW_OUT_DEV, GPAIR, ROW_BUFFER, ROW_LATENCY, GPAIR, ROW_FOLDER, ROW_DIAG, ROW_END },
 };
 static int grid_on;
 static int grid_page(int pg) { return grid_on && GRID[pg][0] <= GCOL(0); }
@@ -284,6 +287,8 @@ typedef struct {
     char in_name[256], out_name[256];      /* "" = system default */
     char in_open[256], out_open[256];       /* what is actually open */
     int in_failed, out_block;
+    int bio;                                /* the audio through lib/brickio (usbaudio.c); 0: SDL's own devices, as before */
+    int audio_sdl;                          /* conduit.cfg audio_path=sdl: the old SDL path (from the next start) */
     int b_erased;                           /* B held: the loop was erased */
     int sel;                                /* selected track */
     float send_mem[CD_TRACKS], verb_mem[CD_TRACKS];              /* the FX send to go back to when it's switched on again */
@@ -518,6 +523,7 @@ static void load_cfg(void)
         if (!strcmp(k, "in_device")) snprintf(G.in_name, sizeof G.in_name, "%s", v);
         else if (!strcmp(k, "out_device")) snprintf(G.out_name, sizeof G.out_name, "%s", v);
         else if (!strcmp(k, "swap_ab")) G.swap_ab = atoi(v);
+        else if (!strcmp(k, "audio_path")) G.audio_sdl = !strcmp(v, "sdl");
         else if (!strncmp(k, "joy_", 4)) {
             for (int a = 0; a < A_N; a++) if (!strcmp(k + 4, ACT_KEY[a])) G.joy_map[a] = atoi(v);
         } else if (!strncmp(k, "midi_", 5)) {
@@ -547,6 +553,8 @@ static void save_cfg(void)
     if (!f) return;
     fprintf(f, "# Conduit settings (edit while the app is closed)\n");
     fprintf(f, "in_device=%s\nout_device=%s\nswap_ab=%d\n", G.in_name, G.out_name, G.swap_ab);
+    fprintf(f, "# audio_path=brickio (straight to a USB interface; its choices in audio.txt) or sdl (the old path: in_device, out_device)\n");
+    fprintf(f, "audio_path=%s\n", G.audio_sdl ? "sdl" : "brickio");
     for (int i = 0; i < NPERSIST; i++) fprintf(f, "%s=%g\n", PKEY[PERSIST[i]], G.eng.p[PERSIST[i]]);
     for (int t = 0; t < CD_TRACKS; t++)
         for (int i = 0; i < NPERSIST_T; i++) fprintf(f, "t%d_%s=%g\n", t + 1, PKEY[PERSIST_T[i]], trk(t)->p[PERSIST_T[i]]);
@@ -563,14 +571,88 @@ static void save_cfg(void)
 
 /* ------------------------------------------------------------- audio */
 
+/* the engine is changed from the main thread only with the audio stopped for a moment: SDL's device
+ * lock, or with brickio (its own audio threads) this mutex, which its process callback holds */
+static pthread_mutex_t bio_mx = PTHREAD_MUTEX_INITIALIZER;
+static void aud_lock(void) { if (G.bio) pthread_mutex_lock(&bio_mx); else if (G.out_dev) SDL_LockAudioDevice(G.out_dev); }
+static void aud_unlock(void) { if (G.bio) pthread_mutex_unlock(&bio_mx); else if (G.out_dev) SDL_UnlockAudioDevice(G.out_dev); }
+
+/* brickio's audio thread: stereo in (when there is input) and out, at 48 kHz, in one call. The input
+ * goes through the engine's own FIFO, as from SDL's capture callback */
+static void bio_process(const float *in, float *out, int frames, int have_input, void *ud)
+{
+    Engine *e = ud;
+    static int had_input, last_frames;
+    uint64_t t0 = perf_audio_begin(frames);
+    pthread_mutex_lock(&bio_mx);
+    if (frames != last_frames) {
+        /* the buffer changed: the FIFO's target and the overdubs' latency follow it (the output's
+         * buffer, about two blocks, and the input's block, as set_latency counts them) */
+        last_frames = frames;
+        e->in_block = frames;
+        e->lat_frames = 3 * frames;
+        e->in_restart = 1;
+    }
+    if (have_input) {
+        if (!had_input) e->in_restart = 1;
+        eng_push_input(e, in, frames);
+    }
+    had_input = have_input;
+    eng_render(e, out, frames);
+    pthread_mutex_unlock(&bio_mx);
+    perf_audio_output(out, frames);
+    perf_audio_end(t0);
+}
+
+static void bio_opened(int frames, const char *device)
+{
+    G.out_block = frames;
+    perf_audio_open(0, CD_SR, frames, 2, device);
+}
+
+/* each frame: what brickio has open, for the screen and the log; its notes as toasts; a latency
+ * test's result */
+static void bio_tick(void)
+{
+    char nb[160];
+    int notes = ua_tick();
+    for (int b = 1; b <= UA_NOTE_REOPEN; b <<= 1)
+        if ((notes & b) && ua_note_text(b, nb, sizeof nb)) toast(b == UA_NOTE_REOPEN, "%s", nb);
+    UaStatus a;
+    ua_status(&a);
+    static char was_in[128];
+    if (strcmp(was_in, a.in_name)) {
+        if (a.in_name[0]) perf_audio_open(1, a.rate, a.buffer, a.in_ch, a.in_name);
+        else if (was_in[0]) perf_audio_closed(1);
+        snprintf(was_in, sizeof was_in, "%s", a.in_name);
+    }
+    snprintf(G.in_open, sizeof G.in_open, "%s", a.in_name[0] ? a.in_name : "None");
+    snprintf(G.out_open, sizeof G.out_open, "%s", a.out_name[0] ? a.out_name : "None");
+    G.in_failed = !a.have_input;
+    static int lt_was;
+    float ms = 0.f;
+    int lt = ua_latency_result(&ms);
+    if (lt_was == 1 && lt != 1) {
+        if (lt == 2) {
+            perf_log("LATENCY", "measured %.1f ms round trip (out, through the cable, in: the interface's converters and USB "
+                                "included), buffer %d, %s", ms, a.buffer, a.duplex ? "DUPLEX" : a.direct_out ? "DIRECT" : "shared");
+            toast(0, "Round trip %.1f ms", ms);
+        } else {
+            perf_log("LATENCY", "nothing came back within 0.5 s: no cable from the output to the input?");
+            toast(1, "Latency test: nothing came back (a cable from the output to the input?)");
+        }
+    }
+    lt_was = lt;
+}
+
 /* how far behind the playhead an overdub lands (besides the input FIFO,
  * which the engine adds): the output's buffer (SDL's block and the driver's,
  * about two blocks) and the capture block */
 static void set_latency(void)
 {
-    if (G.out_dev) SDL_LockAudioDevice(G.out_dev);
+    aud_lock();
     G.eng.lat_frames = 2 * (G.out_block ? G.out_block : 512) + G.eng.in_block;
-    if (G.out_dev) SDL_UnlockAudioDevice(G.out_dev);
+    aud_unlock();
 }
 
 static void out_cb(void *u, Uint8 *s, int len)
@@ -658,10 +740,10 @@ static void open_input(int announce)
     G.in_failed = !G.in_dev;
     snprintf(G.in_open, sizeof G.in_open, "%s", G.in_dev ? (want ? want : "System default") : "None");
     if (G.in_dev) {
-        SDL_LockAudioDevice(G.out_dev);
+        aud_lock();
         G.eng.in_block = got.samples;
         G.eng.in_restart = 1;
-        SDL_UnlockAudioDevice(G.out_dev);
+        aud_unlock();
         perf_audio_open(1, got.freq, got.samples, got.channels, G.in_open);
         set_latency();
         SDL_PauseAudioDevice(G.in_dev, 0);
@@ -796,7 +878,7 @@ static int resample_mosaic(int k)
     Track *t = trk(k);
     float *b = malloc(sizeof(float) * 2 * (size_t)t->cap);
     if (!b) { toast(1, "Resample failed (out of memory?)"); return 1; }
-    SDL_LockAudioDevice(G.out_dev);
+    aud_lock();
     int n = eng_msc_capture(e, b, t->cap);
     if (n > 0) {
         for (int j = 0; j < CD_TRACKS; j++) if (j != k && trk(j)->playing) trk(j)->p[P_MUTE] = 1;
@@ -808,7 +890,7 @@ static int resample_mosaic(int k)
         e->p[P_MSC_MODE] = SC_OFF; e->p[P_MSC_FREEZE] = 0;
         t->playing = 1;
     }
-    SDL_UnlockAudioDevice(G.out_dev);
+    aud_unlock();
     free(b);
     if (n > 0) toast(0, "Mosaic resampled into track %d: %.0f bar%s as heard (FX and master scatter off, the others muted)",
                      k + 1, n / e->tr.cyc, n / e->tr.cyc > 1.5 ? "s" : "");
@@ -834,7 +916,7 @@ static void resample(int k)
     end_busy();
     if (!n) { toast(1, "Nothing to resample"); return; }
     if (!b) { toast(1, "Resample failed (out of memory?)"); return; }
-    SDL_LockAudioDevice(G.out_dev);
+    aud_lock();
     for (int j = 0; j < CD_TRACKS; j++) if (used[j] && j != k) trk(j)->p[P_MUTE] = 1;
     Track *t = trk(k);
     t->p[P_MUTE] = 0; t->p[P_PITCH] = 0; t->p[P_FINE] = 0; t->p[P_REVERSE] = 0; t->p[P_VOLUME] = 1; t->p[P_PAN] = 0;
@@ -845,7 +927,7 @@ static void resample(int k)
     eng_reset_fx_params(G.eng.p);
     fx_reset(&G.eng.fx, G.eng.p);
     t->playing = 1;
-    SDL_UnlockAudioDevice(G.out_dev);
+    aud_unlock();
     free(b);
     toast(0, "Mix resampled into track %d (FX reset, the others muted)", k + 1);
 }
@@ -858,9 +940,9 @@ static void load_file(int i)
     if (t->rec_state == ST_REC) { toast(1, "Track %d is recording", G.sel + 1); return; }
     int n; float *b = wav_read(path, CD_SR, t->cap, &n);
     if (!b) { toast(1, "Can't read %s", G.files[i]); return; }
-    SDL_LockAudioDevice(G.out_dev);
+    aud_lock();
     eng_set_buffer(&G.eng, G.sel, b, n);
-    SDL_UnlockAudioDevice(G.out_dev);
+    aud_unlock();
     free(b);
     eng_play_toggle(&G.eng, G.sel);
     toast(0, "Track %d: %s (%.1fs)", G.sel + 1, G.files[i], n / (double)CD_SR);
@@ -877,9 +959,9 @@ static void play_all(void)
 
 static void do_undo(int k)
 {
-    SDL_LockAudioDevice(G.out_dev);
+    aud_lock();
     int u = eng_undo(&G.eng, k);
-    SDL_UnlockAudioDevice(G.out_dev);
+    aud_unlock();
     int left = eng_undo_count(&G.eng, k);
     if (!u) toast(1, "Track %d: nothing to undo", k + 1);
     else toast(0, "Track %d: %s (%d more undo%s)", k + 1, u == UNDO_ERASE ? "loop back (stopped), B plays it" : "undid overdub",
@@ -1245,8 +1327,10 @@ static void press(int a)
         int dir = a == A_RIGHT ? 1 : -1;
         if (G.page == PG_FILES || G.page == PG_MIDI) { move_sel(dir * G.rows_vis); break; }
         if (row >= 0) adjust(row, dir);
-        else if (row == ROW_IN_DEV) cycle_device(1, dir);
-        else if (row == ROW_OUT_DEV) cycle_device(0, dir);
+        else if (row == ROW_IN_DEV) { if (G.bio) ua_cycle_device(1, dir); else cycle_device(1, dir); }
+        else if (row == ROW_OUT_DEV) { if (G.bio) ua_cycle_device(0, dir); else cycle_device(0, dir); }
+        else if (row == ROW_BUFFER && G.bio) ua_cycle_buffer(dir);
+        else if (row == ROW_LATENCY && G.bio) { ua_latency_test(); toast(0, "Latency test: a cable from the output to the input"); }
         break;
     }
     case A_A:
@@ -1409,6 +1493,7 @@ static void handle_event(SDL_Event *e)
         if (e->jaxis.axis == 1) { set_held(A_UP, e->jaxis.value < -16000); set_held(A_DOWN, e->jaxis.value > 16000); }
         break;
     case SDL_AUDIODEVICEADDED:
+        if (G.bio) { ua_event(e); break; }
         perf_log("AUDIO", "%s device came: %s", e->adevice.iscapture ? "a capture" : "an output",
                  SDL_GetAudioDeviceName((int)e->adevice.which, e->adevice.iscapture) ?: "?");
         if (e->adevice.iscapture && !G.in_name[0]) {
@@ -1424,6 +1509,7 @@ static void handle_event(SDL_Event *e)
         }
         break;
     case SDL_AUDIODEVICEREMOVED:
+        if (G.bio) { ua_event(e); break; }
         perf_log("AUDIO", "%s device went (%s)", e->adevice.iscapture ? "a capture" : "an output",
                  (e->adevice.iscapture ? e->adevice.which == G.in_dev : e->adevice.which == G.out_dev) ? "the one in use" : "not in use");
         if (G.in_dev && e->adevice.which == G.in_dev) {
@@ -2266,6 +2352,7 @@ static void draw_lane(int k)
 static const char *row_label(int id)
 {
     return id >= 0 ? PD[id].name : id == ROW_IN_DEV ? "Input device" : id == ROW_OUT_DEV ? "Output device"
+         : id == ROW_BUFFER ? "Buffer" : id == ROW_LATENCY ? "Latency test"
          : id == ROW_FOLDER ? "Save folder" : id == ROW_TEMPO ? "Tempo" : id == ROW_MIDI_DEV ? "MIDI in" : "Diagnostics";
 }
 
@@ -2273,8 +2360,23 @@ static void row_info(int id, char *v, size_t sz, int maxch)
 {
     Engine *e = &G.eng;
     char md[200];
-    if (id == ROW_IN_DEV) fit(v, sz, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", maxch);
+    if (G.bio && (id == ROW_IN_DEV || id == ROW_OUT_DEV)) {
+        UaStatus a; ua_status(&a);
+        int in = id == ROW_IN_DEV, au = in ? a.in_auto : a.out_auto;
+        const char *nm = in ? a.in_name : a.out_name;
+        char t[200]; snprintf(t, sizeof t, "%s%s", au ? "Auto: " : "", nm[0] ? nm : "none");
+        fit(v, sz, t, maxch);
+    } else if (id == ROW_IN_DEV) fit(v, sz, G.in_name[0] ? G.in_name : "Auto (USB first, else default)", maxch);
     else if (id == ROW_OUT_DEV) fit(v, sz, G.out_name[0] ? G.out_name : "Auto (USB first, else default)", maxch);
+    else if (id == ROW_BUFFER || id == ROW_LATENCY) {
+        if (!G.bio) { fit(v, sz, "SDL path: n/a", maxch); return; }
+        UaStatus a; ua_status(&a);
+        char t[64]; float ms = 0.f; int lt = ua_latency_result(&ms);
+        if (id == ROW_BUFFER) snprintf(t, sizeof t, "%s%d (~%.0f ms)", a.buffer_auto ? "Auto " : "", a.buffer, a.latency_ms);
+        else if (lt == 2) snprintf(t, sizeof t, "%.1f ms", ms);
+        else snprintf(t, sizeof t, "%s", lt == 1 ? "listening..." : lt == -1 ? "no return" : "< > runs it");
+        fit(v, sz, t, maxch);
+    }
     else if (id == ROW_FOLDER) fit(v, sz, G.rec_dir, maxch);
     else if (id == ROW_TEMPO) {
         int nfol, lstate; midi_link_status(&nfol, &lstate);
@@ -2504,7 +2606,7 @@ static void grid_cell(int x, int y, int w, int h, int id, int on)
     }
     if (id < 0) {
         /* a device, folder or what's going on: words, not a control */
-        int sel = id == ROW_IN_DEV || id == ROW_OUT_DEV;
+        int sel = id == ROW_IN_DEV || id == ROW_OUT_DEV || (G.bio && (id == ROW_BUFFER || id == ROW_LATENCY));
         char v[300]; int maxch = (int)((w - 28) / (FONT_CW * 0.62f));
         row_info(id, v, sizeof v, maxch);
         if ((int)strlen(v) > maxch) { char t[300]; fit(t, sizeof t, v, maxch); snprintf(v, sizeof v, "%s", t); }
@@ -2938,6 +3040,7 @@ static void tick_ui(void)
     midi_tick();
     sticks_tick();
     eng_ui_tick(&G.eng);
+    if (G.bio) bio_tick();
     log_watch();
     perf_tick();
     if (perf_quit_requested() && G.running) { G.running = 0; G.quit_why = "asked to close by a signal"; }
@@ -2954,7 +3057,8 @@ static int selftest(const char *shot_dir)
     char p[700];
     Engine *e = &G.eng;
     Track *t1 = trk(0), *t2 = trk(1);
-    CHECK(G.in_dev != 0, "capture device opened");
+    if (G.bio) { WAITMS(500); UaStatus a; ua_status(&a); CHECK(a.have_input, "capture device opened (brickio)"); }
+    else CHECK(G.in_dev != 0, "capture device opened");
 
     /* track 1: the first loop sets the bar */
     G.sel = 0;
@@ -3182,6 +3286,11 @@ int main(int argc, char **argv)
     for (int k = 0; k < CD_TRACKS; k++) { G.send_mem[k] = 1.f; G.verb_mem[k] = 0.5f; }
     G.sel_row[PG_FX] = 1;   /* the first setting, under its heading */
     load_cfg();
+    /* the audio path: brickio unless conduit.cfg says audio_path=sdl (CONDUIT_AUDIO_PATH=sdl|brickio overrides) */
+    { const char *ap = getenv("CONDUIT_AUDIO_PATH");
+      if (ap && *ap) G.audio_sdl = !strcmp(ap, "sdl");
+      G.bio = !G.audio_sdl; }
+    if (G.bio) ua_pin("CONDUIT");   /* the audio threads get cores of their own: before SDL's threads and MIDI's start */
     /* the self-updater: on by default on the TrimUI; CONDUIT_UPDATE=0 (in launch.sh) turns it off,
      * CONDUIT_UPDATE=1 turns it on in a desktop build */
 #ifdef CONDUIT_TRIMUI
@@ -3217,8 +3326,21 @@ int main(int argc, char **argv)
     make_bg();
     open_pads();
 
-    if (open_output()) { toast(1, "No audio output available"); }
-    open_input(0);
+    if (G.bio) {
+        /* lib/brickio: a USB interface first, straight through ALSA (DIRECT, DUPLEX on one interface), the
+         * system's default otherwise; it follows hot-plugging and keeps its choices in audio.txt */
+        static char audio_txt[512];
+        const char *at = getenv("CONDUIT_AUDIO_TXT");
+        snprintf(audio_txt, sizeof audio_txt, "%s", at && *at ? at : "audio.txt");
+        UaConfig ac = { .app = "CONDUIT", .speaker_guard = 0, .process = bio_process, .ud = &G.eng, .log = perf_log,
+                        .settings = audio_txt, .opened = bio_opened, .rate = CD_SR };
+        ua_start(&ac);
+        bio_tick();
+    } else {
+        if (open_output()) { toast(1, "No audio output available"); }
+        open_input(0);
+    }
+    perf_log("AUDIO", "path: %s", G.bio ? "brickio (lib/brickio)" : "SDL (audio_path=sdl)");
     midi_start(&G.eng);
     fprintf(stderr, "[conduit] audio driver %s, input '%s', recordings -> %s\n",
             SDL_GetCurrentAudioDriver(), G.in_open, G.rec_dir);
@@ -3247,6 +3369,7 @@ int main(int argc, char **argv)
 
     save_cfg();
     midi_stop();
+    if (G.bio) ua_stop();
     if (G.in_dev) SDL_CloseAudioDevice(G.in_dev);
     if (G.out_dev) SDL_CloseAudioDevice(G.out_dev);
     SDL_DestroyTexture(G.font); SDL_DestroyRenderer(G.ren); SDL_DestroyWindow(G.win);

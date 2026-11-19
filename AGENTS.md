@@ -11,6 +11,13 @@ coming) it sends MIDI clock; and Bricks on a hub follow it over the USB clock li
 link as Columbia Street's: a follower's bottom port as a USB gadget through configfs and FunctionFS, the
 leader sending clock and where its sound is through usbfs), or it follows one the same way. C on SDL2
 only; MIDI is read from the kernel's raw devices (`/dev/snd/midiC*D*`), with no extra libraries.
+The sound goes through `lib/brickio` (the TrimUI apps' shared USB audio, a copy of sydilaxe/Brickio-dev's
+`src/` at the commit in `lib/brickio/BRICKIO_VERSION`; update it with Brickio-dev's `tools/brickio-sync.sh`,
+never by editing it here): `usbaudio.c` opens the devices and calls `bio_process` in `src/main.c`, which
+feeds the engine's input FIFO and renders, holding `bio_mx`. The main thread changes the engine under
+`aud_lock()` (that mutex, or SDL's device lock on the old path). `audio_path=sdl` in `conduit.cfg` (or
+`CONDUIT_AUDIO_PATH=sdl`) keeps the old SDL path, `open_input` / `open_output`: keep both working, and
+`make test-e2e` passing on both.
 
 The build follows the other TrimUI apps (sydilaxe/Trimui-RadioScan-dev, Trimui-Columbiastreet-dev):
 `make` cross-compiles `build/trimui/conduit` with zig (aarch64, glibc 2.28) against the SDL2 headers

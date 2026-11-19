@@ -23,8 +23,9 @@ export CONDUIT_CFG="$(pwd)/conduit.cfg"
 # Troubleshooting (an update replaces this file: set them again after):
 #   CONDUIT_LOG=2       log.txt gets a status line every second, and every button press (1: every
 #                       10 s, the default; 0: off, but a crash is still logged)
-#   CONDUIT_BUFFER=1024 frames a sound buffer (512 by default): bigger rides out dropouts, which
-#                       log.txt's HINT lines point out
+#   CONDUIT_BUFFER=1024 frames a sound buffer (IO > Buffer sets it too; Auto by default): bigger rides
+#                       out dropouts, which log.txt's HINT lines point out
+#   CONDUIT_AUDIO_PATH=sdl  the old SDL sound path instead of brickio (or audio_path=sdl in conduit.cfg)
 #   CONDUIT_SYSINFO=0   no sysinfo.txt (the system report, see sysinfo.sh)
 # log.txt is this run's; log.1.txt and log.2.txt are the two before, so the log of a run that
 # crashed is still there after starting again

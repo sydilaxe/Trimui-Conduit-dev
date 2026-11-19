@@ -81,7 +81,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev python3-numpy
       - name: DSP + WAV unit tests (ASan/UBSan)
         run: make test
-      - name: End-to-end (SDL disk audio, headless)
+      - name: End-to-end, the old SDL sound path (audio_path=sdl)
+        run: CONDUIT_AUDIO_PATH=sdl make -j"$(nproc)" test-e2e
+      - name: End-to-end (SDL disk audio, headless; the sound through brickio)
         run: make -j"$(nproc)" test-e2e
       - name: Self-update against a local fake GitHub
         run: make update-test
