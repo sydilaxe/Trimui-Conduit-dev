@@ -9,10 +9,12 @@
 #include "aring.h"    /* the input's ring between two callbacks: cushion, drift, resampling */
 #include "blink.h"    /* the Brick link's data channel: its frames */
 #include "blinkio.h"  /* the Brick link's data channel: sessions, audio and MIDI between Bricks */
+#include "blinkauto.h" /* the data channel managed: every Brick on the hub, or the leader, from the audio thread */
 #include "duplex.h"   /* one interface straight through ALSA: full duplex, or playback only */
 #include "link.h"     /* the clock link between Bricks over USB (the bottom port as a device) */
 #include "linkpos.h"  /* the link's position message (F0 7D 'T' 'L') */
 #include "mclock.h"   /* the musical clock: MIDI clock and the link, in and out, on one timeline */
+#include "mclockio.h" /* the musical clock wired to the MIDI ports and the link: one call, both ways */
 #include "midi.h"     /* USB MIDI: the devices, a reader thread, clock out, raw tap, SysEx hook */
 #include "perflog.h"  /* the performance log: STAT, PROC, JUMP, HINT, END */
 #include "sync.h"     /* HI5S, the Wi-Fi sync: tempo, bar phase, transport over UDP */

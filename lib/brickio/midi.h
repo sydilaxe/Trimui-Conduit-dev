@@ -33,6 +33,9 @@ int midi_start(const char *pattern, void (*wake)(void));
 int midi_poll(MidiEv *out, int max);
 /* bytes out to every open device that takes them; how many devices took them */
 int midi_send(const uint8_t *bytes, int n);
+/* the same to every device but one (dev, as the hooks number them: the port a clock came in on, so a
+ * relayed clock never goes back to its source); -1 sends to all */
+int midi_send_except(int dev, const uint8_t *bytes, int n);
 /* clock out to every device: 24 a beat at bpm, from a thread of its own on an absolute timetable;
  * start (FA) as it begins, stop (FC) at 0. A new bpm takes effect from the next tick */
 void midi_clock_out(float bpm);
@@ -47,6 +50,18 @@ void midi_stop(void);
  * its own parser takes the bytes from here: every byte read, as read, on the reader thread (copy them
  * out; don't block). dev: which device (0..midi_count()-1). NULL stops it. midi_poll still works. */
 void midi_set_raw(void (*fn)(int dev, const uint8_t *bytes, int n, uint64_t t_ns, void *ud), void *ud);
+
+/* the reader thread at real-time priority (SCHED_FIFO prio, 1-99; 0: as other threads, the default), so
+ * each message's time is taken the moment it arrives, not when the scheduler gets round to the thread
+ * (the screen's work can delay a normal thread by milliseconds: a clock follower's tempo and phase come
+ * from those times). Before midi_start; refused (no permission), the thread runs as before */
+void midi_set_priority(int prio);
+
+/* the clock as it arrives, on the reader thread, before anything is queued: each real-time byte (F8 clock,
+ * FA start, FB continue, FC stop; songpos -1), and song position (b F2, songpos in 16ths). For a clock
+ * follower (mclockio.h wires it to mclock): t_ns is when the read woke, the closest to the byte's arrival.
+ * The real-time bytes still queue as MIDI_CLOCK ... events for midi_poll. NULL stops it */
+void midi_set_clock(void (*fn)(int dev, uint8_t b, int songpos, uint64_t t_ns, void *ud), void *ud);
 
 /* each complete SysEx (F0 ... F7, up to 64 bytes; longer ones are passed by), on the reader thread:
  * e.g. the clock link's position message (linkpos.h) from a MIDI port. NULL stops it. */
