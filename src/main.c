@@ -3198,7 +3198,15 @@ static int selftest(const char *shot_dir)
         CHECK(fabs(e->tr.bpm - 120) < 1.0, "MIDI clock tempo measured (120 BPM)");
         e->p[P_CLOCK] = CLOCK_MIDI;
         WAITMS(500);
-        CHECK(e->tr.running && fabs(e->tr.cyc - 2.0 * CD_SR) < 0.01 * CD_SR, "transport follows the clock (1 bar = 2.000 s)");
+        /* the bar follows the clock it measures (beats x 60 s / BPM), and that clock is 120 BPM within the
+         * tempo check's +-1 BPM: a fixed +-10 ms on the bar was tighter than that, and a script-paced clock on a
+         * busy CI runner (120.7 BPM: a 1.988 s bar) failed it while passing the tempo check */
+        aud_lock();
+        double bar_s = e->tr.cyc / CD_SR, bpm_now = e->tr.bpm, want_s = bpm_now > 0 ? 60.0 * e->p[P_BEATS] / bpm_now : 0;
+        int run_now = e->tr.running;
+        aud_unlock();
+        fprintf(stderr, "     bar %.4f s at %.2f BPM (expected %.4f s)\n", bar_s, bpm_now, want_s);
+        CHECK(run_now && fabs(bpm_now - 120) < 1.0 && fabs(bar_s - want_s) < 0.002, "transport follows the clock (1 bar = 4 beats at the clock's tempo, ~2 s)");
         G.page = PG_MIDI;
         int ti = -1;
         for (int i = 0; i < G.ntg; i++) if (!strcmp(G.tg[i].key, "t1_volume")) ti = i;
