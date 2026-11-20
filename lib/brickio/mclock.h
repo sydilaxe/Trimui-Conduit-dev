@@ -55,6 +55,11 @@ void mclock_set_relay(int on);         /* 1: while following a clock (or a leadi
                                         * STOP: gear further down lines up with what this app plays. 0 by default
                                         * (only the link position is passed on, as before). mclockio leaves out the
                                         * port the clock comes from */
+void mclock_set_ratio(double in, double out); /* the clock's tempo to the app's: in 0.5 follows a clock at
+                                        * half its tempo (half time), out 2 sends one at double the app's
+                                        * (1/8..8; 1 by default). MIDI clock only: a leading Brick's link is
+                                        * followed at its own tempo */
+void mclock_set_start_out(int on);     /* 0: the clock goes out without START and STOP (1 by default) */
 void mclock_set_latency(float seconds);/* from the app's position to the sound heard, when there is
                                         * no audio clock (aclock) running: the output's real queue */
 
