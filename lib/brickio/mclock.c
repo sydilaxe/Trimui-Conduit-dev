@@ -11,11 +11,12 @@
 #include "linkpos.h"
 
 static const ClockHost *H;
-static atomic_int mode = MCLOCK_AUTO, transport = 1;
+static atomic_int mode = MCLOCK_AUTO, transport = 1, relay;
 static _Atomic float latency_s = 0.02f;
 
 void mclock_set_mode(int m) { atomic_store(&mode, m < MCLOCK_AUTO || m > MCLOCK_OFF ? MCLOCK_AUTO : m); }
 void mclock_set_transport(int on) { atomic_store(&transport, on != 0); }
+void mclock_set_relay(int on) { atomic_store(&relay, on != 0); }
 void mclock_set_latency(float s) { atomic_store(&latency_s, s < 0.f ? 0.f : s); }
 
 static int can_follow(void) { int m = atomic_load(&mode); return m == MCLOCK_AUTO || m == MCLOCK_FOLLOW; }
@@ -49,6 +50,7 @@ static int64_t ticks;           /* the 16th / 6 the last tick marked: the first 
 static atomic_int following;    /* an outside clock leads */
 static int ext_running;
 static int settle;              /* clocks after START before the phase is held: until the first step has played */
+static int snap;                /* CONTINUE: the next tick places the app exactly (wherever between ticks it came) */
 static uint64_t precise_us;     /* the last position from a leading Brick: its tempo and phase win over the ticks' */
 static double pll_i;
 
@@ -73,12 +75,28 @@ static double fit(int cnt)
     return d > 0.0 ? (n * sxy - sx * sy) / d : 0.0;
 }
 
-static void clock_tick(uint64_t t)
+static void tk_push(uint64_t t)
 {
-    if (tick_us && (t <= tick_us || t - tick_us >= 250000)) tk_n = 0; /* a gap: the fit starts afresh */
     tk_t[tk_w] = t;
     tk_w = (tk_w + 1) % TK;
     if (tk_n < TK) tk_n++;
+}
+
+static void clock_tick(uint64_t t)
+{
+    if (tick_us && (t <= tick_us || t - tick_us >= 250000)) tk_n = 0; /* a gap: the fit starts afresh */
+    /* ticks lost on the way (a busy USB hub, a full buffer): a gap of 2-4 ticks' length, within a third of
+     * a tick, while the tempo is settled. Counted all the same, so the phase stays on the right tick, and
+     * put where they were due, so the tempo isn't pulled down by them */
+    int lost = 0;
+    if (tick_us && tk_n >= 24 && tick_avg_us > 0.0) {
+        double gap = (double)(t - tick_us), k = floor(gap / tick_avg_us + 0.5);
+        if (k >= 2.0 && k <= 4.0 && fabs(gap - k * tick_avg_us) < tick_avg_us / 3.0) {
+            lost = (int)k - 1;
+            for (int m = 1; m <= lost; m++) tk_push(tick_us + (uint64_t)(gap * m / k));
+        }
+    }
+    tk_push(t);
     /* a tempo change: the last beat's ticks (a short fit) disagree with the four beats' by more than
      * 1 %, far beyond what jitter does (a few hundredths of one): the four beats start again from that
      * beat, so the new tempo is taken in one beat rather than four (and the phase has less to catch up) */
@@ -99,7 +117,7 @@ static void clock_tick(uint64_t t)
     }
     if (precise_us && t - precise_us < 1000000) { /* a leading Brick's positions hold the tempo and phase */
         atomic_store(&following, 1);
-        ticks++;
+        ticks += 1 + lost;
         return;
     }
     atomic_store(&following, 1);
@@ -109,7 +127,14 @@ static void clock_tick(uint64_t t)
     bpm = bpm < 40.f ? 40.f : bpm > 250.f ? 250.f : bpm;
     if (fabsf(bpm - H->bpm()) > (tk_n < TK ? 0.05f : 0.15f)) H->set_bpm(roundf(bpm * 100.f) / 100.f); /* finer while the fit fills */
     if (!ext_running || !H->playing()) return;
-    ticks++;
+    ticks += 1 + lost;
+    if (snap) { /* the first tick after CONTINUE marks where the song goes on: the heard sound there now */
+        snap = 0;
+        H->set_position(position() + ticks / 6.0 - heard_now(t));
+        H->set_rate(1.0);
+        pll_i = 0.0;
+        return;
+    }
     if (settle > 0) {
         settle--;
         return;
@@ -137,25 +162,40 @@ void mclock_realtime(uint8_t b, uint64_t t)
         if (!can_transport()) break;
         ticks = -1;
         ext_running = 1;
+        /* led from now: the clock out (AUTO) stays quiet even before the ticks have given a tempo, rather
+         * than sending a START and a tick of its own back (mclock_watch lets go if no ticks follow) */
+        atomic_store(&following, 1), ext_seen_us = t;
         settle = 6;
         H->set_rate(1.0);
         H->set_playing(0); /* the first step plays now */
         H->set_playing(1);
         break;
-    case 0xfb: /* CONTINUE: from the song position */
+    case 0xfb: /* CONTINUE: from the song position (the last tick's, or a song position message's). The
+                * app starts about there now, and the first tick after it places it exactly: CONTINUE can
+                * come anywhere between two ticks of a clock that keeps running */
         if (!can_transport()) break;
         ext_running = 1;
+        atomic_store(&following, 1), ext_seen_us = t;
         H->set_playing(1);
-        if (ticks > 0) H->set_position(ticks / 6.0 + atomic_load(&latency_s) * H->bpm() / 15.0);
+        if (ticks > 0) H->set_position((ticks + 1) / 6.0 + atomic_load(&latency_s) * H->bpm() / 15.0), snap = 1;
         else settle = 6;
         break;
     case 0xfc: /* STOP */
         if (!can_transport()) break;
-        ext_running = 0;
+        ext_running = snap = 0;
         H->set_rate(1.0);
         H->set_playing(0);
         break;
     }
+}
+
+/* song position: the next tick is this 16th's first (ticks is the last tick's, as after START, where it
+ * is -1); while playing, the position moves there now */
+void mclock_song_position(int sixteenths)
+{
+    if (!can_transport()) return;
+    ticks = (int64_t)sixteenths * 6 - 1;
+    if (H->playing()) H->set_position(sixteenths + atomic_load(&latency_s) * H->bpm() / 15.0);
 }
 
 void mclock_link_position(uint64_t t, double lead, double bpm, int lead_playing)
@@ -217,7 +257,7 @@ void mclock_reset(void)
     tick_avg_us = 0.0;
     ticks = 0;
     atomic_store(&following, 0);
-    ext_running = settle = 0;
+    ext_running = settle = snap = 0;
     precise_us = 0, pll_i = 0.0;
     tk_n = tk_w = 0;
     atomic_store(&out_running, 0);
@@ -233,7 +273,8 @@ void mclock_init(const ClockHost *host)
 int mclock_step(uint64_t t, uint8_t *out, int max)
 {
     int n = 0;
-    int play = H->playing() && can_send() && !atomic_load(&following);
+    /* leading: when allowed to send; following: when relaying (the clock heard here goes on) */
+    int play = H->playing() && (atomic_load(&following) ? atomic_load(&relay) : can_send());
     if (!play) {
         if (atomic_load(&out_running) && n < max) out[n++] = 0xfc;
         atomic_store(&out_running, 0);

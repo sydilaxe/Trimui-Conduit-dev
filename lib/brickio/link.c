@@ -339,9 +339,17 @@ static int free_udc(char *udc, int n)
 
 static void on_wake(int s) { (void)s; }
 
+static int prio_want;
+void link_follow_priority(int prio) { prio_want = prio < 0 ? 0 : prio > 99 ? 99 : prio; }
+
 static void *loop(void *arg)
 {
     (void)arg;
+    if (prio_want > 0) {
+        struct sched_param sp = {.sched_priority = prio_want};
+        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+            fprintf(stderr, "link: reader at normal priority (real time refused)\n");
+    }
     uint8_t buf[512];
     while (running) {
         if (ep1 < 0 && (ep1 = open(FFS_DIR "/ep1", O_RDONLY | O_CLOEXEC)) < 0) {

@@ -50,12 +50,20 @@ void mclock_reset(void);               /* forget what came in (a new song, say) 
 void mclock_set_mode(int mode);        /* MCLOCK_*, AUTO by default */
 void mclock_set_transport(int on);     /* 0: the clock only, START / STOP ignored (and the link lines
                                         * up the bar, not the song); 1 by default */
+void mclock_set_relay(int on);         /* 1: while following a clock (or a leading Brick), send one on too, stepped
+                                        * from this app's heard sound (locked to the one coming in), with START and
+                                        * STOP: gear further down lines up with what this app plays. 0 by default
+                                        * (only the link position is passed on, as before). mclockio leaves out the
+                                        * port the clock comes from */
 void mclock_set_latency(float seconds);/* from the app's position to the sound heard, when there is
                                         * no audio clock (aclock) running: the output's real queue */
 
 /* in: each real-time byte (F8 FA FB FC) and each link position, with its arrival time */
 void mclock_realtime(uint8_t b, uint64_t t_us);
 void mclock_link_position(uint64_t t_us, double lead, double bpm, int playing);
+/* in: song position (F2), in 16th notes: the next tick marks that 16th (a sequencer CONTINUEing from the
+ * middle of a song sends it first); while playing, the app moves there now. Ignored set to the clock only */
+void mclock_song_position(int sixteenths);
 
 /* out: the bytes to send to the MIDI ports now (call every millisecond or so from the MIDI thread),
  * and the link position for following Bricks (every 20 ms; 0 bytes otherwise) */

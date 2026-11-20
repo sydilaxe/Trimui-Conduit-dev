@@ -13,6 +13,7 @@
 #include "link.h"     /* the clock link between Bricks over USB (the bottom port as a device) */
 #include "linkpos.h"  /* the link's position message (F0 7D 'T' 'L') */
 #include "mclock.h"   /* the musical clock: MIDI clock and the link, in and out, on one timeline */
+#include "mclockio.h" /* the musical clock wired to the MIDI ports and the link: one call, both ways */
 #include "midi.h"     /* USB MIDI: the devices, a reader thread, clock out, raw tap, SysEx hook */
 #include "perflog.h"  /* the performance log: STAT, PROC, JUMP, HINT, END */
 #include "sync.h"     /* HI5S, the Wi-Fi sync: tempo, bar phase, transport over UDP */

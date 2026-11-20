@@ -27,6 +27,9 @@
 int link_follow_start(const char *app, void (*on_bytes)(const uint8_t *b, int n, uint64_t t_us, void *ud), void *ud,
                       void (*notice)(const char *msg));
 void link_follow_stop(void);
+/* before link_follow_start: the follower's reader at real-time priority (SCHED_FIFO prio; 0, the default:
+ * as other threads), so the leader's bytes are stamped as they arrive (see midi_set_priority) */
+void link_follow_priority(int prio);
 /* 0 not set up, 1 waiting for a leader, 2 a leader sending (in the last 2 s) */
 int link_follow_state(void);
 

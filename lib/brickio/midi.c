@@ -27,6 +27,8 @@ typedef struct {
     uint8_t status, d[2];
     int nd, sysex;
     uint8_t sx[SXMAX];
+    uint8_t common, cd[2]; /* a system common message being read (F1 F2 F3): its data */
+    int cn;
     int sxn; /* -1: too long, being skipped */
 } Dev;
 
@@ -116,8 +118,17 @@ static int parse(Dev *d, uint8_t b, MidiEv *e)
         d->sx[d->sxn++] = 0xf7;
         return 2;
     }
-    if (b >= 0xf0) { d->sysex = 0; d->status = 0; return 0; }
-    if (b & 0x80) { d->sysex = 0; d->status = b; d->nd = 0; return 0; }
+    /* system common: F2 song position (two data bytes; 3 when complete), F1 and F3 (one, passed by), the
+     * others none. They cancel running status (MIDI 1.0), so their data never reads as a channel message's */
+    if (b >= 0xf0) { d->sysex = 0; d->status = 0; d->common = b == 0xf1 || b == 0xf2 || b == 0xf3 ? b : 0; d->cn = 0; return 0; }
+    if (b & 0x80) { d->sysex = 0; d->common = 0; d->status = b; d->nd = 0; return 0; }
+    if (d->common) {
+        d->cd[d->cn++] = b;
+        if (d->cn < (d->common == 0xf2 ? 2 : 1)) return 0;
+        int songpos = d->common == 0xf2;
+        d->common = 0;
+        return songpos ? 3 : 0;
+    }
     if (d->sysex) {
         if (d->sxn >= 0 && d->sxn < SXMAX - 1) d->sx[d->sxn++] = b;
         else d->sxn = -1;
@@ -143,6 +154,15 @@ static int parse(Dev *d, uint8_t b, MidiEv *e)
 /* (the lock held) */
 static void (*sysex_fn)(int, const uint8_t *, int, uint64_t, void *);
 static void *sysex_ud;
+static void (*clock_fn)(int, uint8_t, int, uint64_t, void *);
+static void *clock_ud;
+
+void midi_set_clock(void (*fn)(int dev, uint8_t b, int songpos, uint64_t t_ns, void *ud), void *ud)
+{
+    pthread_mutex_lock(&lock);
+    clock_fn = fn, clock_ud = ud;
+    pthread_mutex_unlock(&lock);
+}
 
 void midi_set_sysex(void (*fn)(int dev, const uint8_t *msg, int n, uint64_t t_ns, void *ud), void *ud)
 {
@@ -158,9 +178,18 @@ void midi_set_raw(void (*fn)(int dev, const uint8_t *bytes, int n, uint64_t t_ns
     pthread_mutex_unlock(&lock);
 }
 
+static atomic_int prio_want;
+void midi_set_priority(int prio) { atomic_store(&prio_want, prio < 0 ? 0 : prio > 99 ? 99 : prio); }
+
 static void *reader(void *arg)
 {
     (void)arg;
+    int prio = atomic_load(&prio_want);
+    if (prio > 0) {
+        struct sched_param sp = {.sched_priority = prio};
+        int e = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        fprintf(stderr, "midi: reader %s\n", e ? "at normal priority (real time refused)" : "at real-time priority");
+    }
     uint64_t next_scan = 0;
     while (atomic_load(&running)) {
         struct pollfd pf[MAXDEV];
@@ -186,7 +215,9 @@ static void *reader(void *arg)
                 MidiEv e;
                 int r = parse(&dev[k], buf[i], &e);
                 if (r == 2) { if (sysex_fn) sysex_fn(k, dev[k].sx, dev[k].sxn, t, sysex_ud); continue; }
+                if (r == 3) { if (clock_fn) clock_fn(k, 0xf2, dev[k].cd[0] | dev[k].cd[1] << 7, t, clock_ud); continue; }
                 if (!r) continue;
+                if (e.type >= MIDI_CLOCK && clock_fn) clock_fn(k, buf[i], -1, t, clock_ud);
                 e.t_ns = t;
                 unsigned w = atomic_load_explicit(&qw, memory_order_relaxed);
                 if (w - atomic_load_explicit(&qr, memory_order_acquire) >= QSIZE) continue; /* full: dropped */
@@ -226,6 +257,16 @@ int midi_send(const uint8_t *bytes, int n)
     pthread_mutex_lock(&lock);
     for (int k = 0; k < ndev; k++)
         if (dev[k].out && write(dev[k].fd, bytes, (size_t)n) == n) took++;
+    pthread_mutex_unlock(&lock);
+    return took;
+}
+
+int midi_send_except(int skip, const uint8_t *bytes, int n)
+{
+    int took = 0;
+    pthread_mutex_lock(&lock);
+    for (int k = 0; k < ndev; k++)
+        if (k != skip && dev[k].out && write(dev[k].fd, bytes, (size_t)n) == n) took++;
     pthread_mutex_unlock(&lock);
     return took;
 }
